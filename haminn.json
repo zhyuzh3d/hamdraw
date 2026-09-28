@@ -1,0 +1,17 @@
+{
+  "schema": 2,
+  "happId": "life.airen.hamdraw",
+  "name": "HamDraw",
+  "author": "zhyuzh",
+  "version": {
+    "code": 89,
+    "name": "0.5.13"
+  },
+  "entry": "index.html",
+  "routing": "hash",
+  "icon": "app/assets/icon.webp",
+  "display": {
+    "orientation": "portrait",
+    "keyboard": "resize"
+  }
+}
