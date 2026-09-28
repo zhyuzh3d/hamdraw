@@ -44,29 +44,30 @@ legacyConfig.quality = {
 Object.assign(legacyConfig.quick, { protocol: "a1x-flux", endpoint: "http://192.168.124.31:8188", apiKey: "kept-secret", width: 256, height: 256, steps: 1, model: "flux2_klein_4b_distilled_nvfp4" });
 records.set("config", { value: legacyConfig, revision: "seed-config" });
 await store.loadConfig();
-assert.equal(app.config.schema, 8);
-assert.equal(app.config.quick.protocol, "cvp", "a retired A1X slot must become a CVP slot");
+assert.equal(app.config.schema, 10);
+assert.equal(app.config.quick.protocol, "chp", "a retired A1X slot must become a CHP slot");
 assert.equal(app.config.quick.width, 512);
-assert.equal(app.config.quick.steps, 8, "a retired slot must fall back to the CVP step default");
-assert.equal(app.config.quick.model, "", "CVP picks its own checkpoint, so the old model id must be cleared");
+assert.equal(app.config.quick.steps, 8, "a retired slot must fall back to the CHP step default");
+assert.equal(app.config.quick.model, "", "CHP picks its own checkpoint, so the old model id must be cleared");
 assert.equal(app.config.quick.guidanceScale, 1);
 assert.equal(app.config.canvas.resultBrightness, 100, "global color defaults must be migrated into config");
-assert.equal(app.config.upscale.protocol, "cvp");
+assert.equal(app.config.upscale.protocol, "chp");
 assert.equal(app.config.upscale.width, 1024);
-assert.equal(app.config.upscale.steps, 8);
+assert.equal(app.config.upscale.steps, 8, "every task is locked to its own capability's numbers, so the render slot takes the app's defaults for it");
+assert.equal(app.config.upscale.refStrength, 0.75);
 assert.equal(app.config.upscale.model, "");
 assert.equal(app.config.upscale.endpoint, "http://192.168.124.31:8188", "the retired quality slot must become the upscale task with its connection intact");
 assert.equal(app.config.inpaint.endpoint, "http://192.168.124.31:8188", "local redraw must inherit the quick connection on migration");
 assert.equal(Object.prototype.hasOwnProperty.call(app.config, "quality"), false, "the retired quality slot must not survive migration");
 assert.equal(Object.prototype.hasOwnProperty.call(app.config.canvas, "overlayGenerate"), false, "overlay generation is an artwork setting and must not become a global default");
 assert.equal(app.config.quick.apiKey, "kept-secret", "migration must preserve the saved credential");
-// Schema 8 keeps one CVP connection for all three tasks: the address a configured
-// task already had becomes that connection, and every CVP task follows it.
-assert.equal(app.config.connection.endpoint, "http://192.168.124.31:8188", "a configured CVP task must donate its address to the shared connection");
+// Schema 8 keeps one CHP connection for all three tasks: the address a configured
+// task already had becomes that connection, and every CHP task follows it.
+assert.equal(app.config.connection.endpoint, "http://192.168.124.31:8188", "a configured CHP task must donate its address to the shared connection");
 assert.equal(app.config.connection.apiKey, "kept-secret", "the shared connection must carry the saved password");
 ["quick", "inpaint", "upscale"].forEach(name => {
-  assert.equal(app.config[name].endpoint, app.config.connection.endpoint, name + " must read the shared CVP address");
-  assert.equal(app.config[name].apiKey, app.config.connection.apiKey, name + " must read the shared CVP password");
+  assert.equal(app.config[name].endpoint, app.config.connection.endpoint, name + " must read the shared CHP address");
+  assert.equal(app.config[name].apiKey, app.config.connection.apiKey, name + " must read the shared CHP password");
 });
 const shared = await store.saveConfig({ ...app.config, connection: { endpoint: "http://10.0.0.5:8188", apiKey: "one", customHeaders: "" } });
 ["quick", "inpaint", "upscale"].forEach(name => {
@@ -75,8 +76,38 @@ const shared = await store.saveConfig({ ...app.config, connection: { endpoint: "
 });
 assert.equal(shared.connection.endpoint, "http://10.0.0.5:8188", "the saved config must keep the shared connection itself");
 const mixed = await store.saveConfig({ ...shared, quick: { ...shared.quick, protocol: "openai-images", endpoint: "https://api.example.com" }, connection: shared.connection });
-assert.equal(mixed.quick.endpoint, "https://api.example.com", "a non-CVP task must keep its own address");
-assert.equal(mixed.inpaint.endpoint, "http://10.0.0.5:8188", "a non-CVP task must not disturb the shared CVP connection");
+assert.equal(mixed.quick.endpoint, "https://api.example.com", "a non-CHP task must keep its own address");
+assert.equal(mixed.inpaint.endpoint, "http://10.0.0.5:8188", "a non-CHP task must not disturb the shared CHP connection");
+
+// Schema 9 renamed the API format together with the plugin that implements it: CVP
+// became CHP (`chp/1`, served at `/chp`). It is a migration rather than a lenient
+// comparison because nothing in the format picker answers to the retired id — the
+// dialog would open with nothing selected and `generate()` would refuse a task that
+// worked yesterday, which reads as "my model broke" rather than "the name changed".
+{
+  const beforeRename = copy(app.config);
+  beforeRename.schema = 8;
+  ["quick", "inpaint", "upscale"].forEach(name => { beforeRename[name].protocol = "cvp"; });
+  // …and the render slot still carrying numbers from before the three tasks were
+  // locked to their capabilities. 2048² runs, 20 steps run, and nothing else would
+  // ever correct them: the migration is the one place a stored config is put back on
+  // the numbers the app prints for that slot.
+  Object.assign(beforeRename.upscale, { width: 2048, height: 2048, steps: 20, refStrength: 0.95 });
+  records.set("config", { value: beforeRename, revision: "seed-pre-rename" });
+  await store.loadConfig();
+  assert.equal(app.config.schema, 10);
+  ["quick", "inpaint", "upscale"].forEach(name => {
+    assert.equal(app.config[name].protocol, "chp", name + " must carry the retired CVP protocol id over to CHP");
+  });
+  assert.equal(app.config.upscale.width, 1024, "the render slot must be re-derived onto the canvas the app locks it to");
+  assert.equal(app.config.upscale.height, 1024);
+  assert.equal(app.config.upscale.steps, 8, "the render slot must be re-derived onto the app's step count for that slot");
+  assert.equal(app.config.upscale.refStrength, 0.75, "the render slot must be re-derived onto the app's reference weight for that slot");
+  assert.equal(app.config.connection.endpoint, "http://10.0.0.5:8188", "renaming the format must not reset the shared connection");
+  assert.equal(app.config.quick.apiKey, "one", "renaming the format must not drop the saved password");
+  records.set("config", { value: copy(shared), revision: "seed-shared" });
+  await store.loadConfig();
+}
 Object.assign(app.state, {
   prompt: "Original", objects: [{ id: "stroke-1", type: "stroke", points: Array.from({ length: 5000 }, (_, index) => ({ x: index % 768, y: Math.floor(index / 8) % 768 })) }, { id: "image-1", type: "image", src: "data:image/png;base64,abc", url: "data:image/png;base64,abc" }],
   autoDelayMs: 1320, strength: 1.35, colorStrength: 0.47, resultOpacity: 0.42, layerOpacity: 0.37, resultVisible: false, overlayGenerate: true, seed: 73, seedLocked: true, resultGlow: 38, resultClarity: 24, resultAdjustmentsEnabled: false,
@@ -172,7 +203,7 @@ app.services.imageEngine.init(app.components.canvas);
 await assert.rejects(() => app.services.imageEngine.internals.withDeadline(new Promise(() => {}), 5), /生成等待超时/);
 assert.equal(app.services.imageEngine.internals.overallTimeout({ timeoutMs: 90000 }), 105000, "overall watchdog must outlive the provider deadline without allowing an infinite wait");
 app.platform.haminn.messageChars = 200000;
-Object.assign(app.config.quick, { endpoint: "http://192.168.124.31:8188", protocol: "cvp", model: "", inputMode: "sketch", width: 512, height: 512, steps: 8 });
+Object.assign(app.config.quick, { endpoint: "http://192.168.124.31:8188", protocol: "chp", model: "", inputMode: "sketch", width: 512, height: 512, steps: 8 });
 app.state.prompt = "a fox";
 const first = app.services.imageEngine.run("quick", false);
 await new Promise(resolve => setTimeout(resolve, 5));
@@ -203,7 +234,7 @@ assert.equal(events.length, 2, "a new request after cancel must be able to compl
 app.state.maskMode = true;
 app.state.localPrompt = "a golden crown";
 app.state.prompt = "a fox holding a crown";
-Object.assign(app.config.inpaint, { endpoint: "http://192.168.1.2:8188", protocol: "cvp", model: "", inputMode: "sketch", width: 512, height: 512, steps: 6 });
+Object.assign(app.config.inpaint, { endpoint: "http://192.168.1.2:8188", protocol: "chp", model: "", inputMode: "sketch", width: 512, height: 512, steps: 6 });
 maskCompositions = 0;
 const redraw = app.services.imageEngine.run("quick", false);
 await new Promise(resolve => setTimeout(resolve, 5));
@@ -233,7 +264,7 @@ assert.equal(events.at(-1).slot, "upscale", "a validated render must be delivere
 // it reports what it did through the job's translated / prompt / prompt_source.
 // The client keeps no cache to fall out of step with it, blocks nothing, and
 // never rewords what the user typed.
-Object.assign(app.config.quick, { endpoint: "http://192.168.1.2:8188", protocol: "cvp", model: "", inputMode: "sketch", width: 512, height: 512, steps: 8 });
+Object.assign(app.config.quick, { endpoint: "http://192.168.1.2:8188", protocol: "chp", model: "", inputMode: "sketch", width: 512, height: 512, steps: 8 });
 app.state.prompt = "一只蓝色的水晶鸟"; app.state.negativePrompt = "模糊、变形";
 const chineseRun = app.services.imageEngine.run("quick", false);
 await new Promise(resolve => setTimeout(resolve, 5));
@@ -245,4 +276,42 @@ const englishRun = app.services.imageEngine.run("quick", false);
 await new Promise(resolve => setTimeout(resolve, 5));
 assert.equal(inputs.at(-1).prompt, "a fox in snow", "an English prompt must be submitted verbatim, never reworded");
 pending.shift()({ src: "english" }); await englishRun;
-console.log("workspace.test.mjs: ok (64 KiB chunking, migration, history, restore, watchdog, cancel, generation queue, raw prompts)");
+// The containers a drawing carries are part of the artwork, and the record has to hold them beside the
+// objects: a member only *names* its group, so a record that saved the members and lost the table
+// would bring a turned group back upright, and a group that came back upright is a group the user
+// cannot get back. Schema 11 is where the table was added; a record written before it spells the group
+// inside each member instead, and is read from there.
+const groupedRecord = [
+  { id: "a", type: "image", url: "data:image/png;base64,AAAA", x: 60, y: 80, width: 120, height: 90, groupId: "g1" },
+  { id: "b", type: "image", url: "data:image/png;base64,AAAA", x: 260, y: 200, width: 100, height: 140, groupId: "g1" }
+];
+app.state.objects = copy(groupedRecord);
+app.state.groups = { g1: { m: [0, 1, -1, 0, 400, 20], rect: { x: 60, y: 80, width: 300, height: 260 }, formal: true } };
+app.state.workId = ""; app.state.workTitle = ""; app.state.result = null; app.state.renderResult = null; app.state.cover = null;
+const groupedSnapshot = store.serializeCanvas();
+assert.equal(groupedSnapshot.schema, 11, "a saved canvas must say which shape of record it is");
+assert.equal(groupedSnapshot.groups.g1.m.join(","), "0,1,-1,0,400,20", "the container's placement must go into the record");
+assert.equal(groupedSnapshot.groups.g1.formal, true, "and whether it is a group or only a selection, since that decides how long it lives");
+const savedRect = groupedSnapshot.groups.g1.rect;
+assert.equal(savedRect.x + "," + savedRect.y + "," + savedRect.width + "," + savedRect.height, "60,80,300,260",
+  "and its own rectangle, which is the box the handles ride");
+const groupedBack = await store.hydrate(groupedSnapshot);
+assert.equal(groupedBack.groups.g1.m.join(","), "0,1,-1,0,400,20", "and reading it back must return the container, or the group comes back upright");
+assert.equal(groupedBack.objects[0].groupId, "g1");
+assert.equal(groupedBack.objects[1].groupId, "g1");
+const legacyGroup = copy(groupedRecord);
+legacyGroup.forEach((object) => { delete object.groupId; });
+legacyGroup[0].groupId = "g1"; legacyGroup[1].groupId = "g1";
+legacyGroup[0].groupRotation = Math.PI / 2; legacyGroup[0].groupPivot = { x: 200, y: 150 };
+legacyGroup[1].groupRotation = Math.PI / 2; legacyGroup[1].groupPivot = { x: 200, y: 150 };
+const migratedGroup = await store.hydrate({ schema: 10, objects: legacyGroup, background: "#ffffff", prompt: "", workTitle: "" });
+assert.equal(migratedGroup.schema, 11, "a record from before the table must be brought up to it");
+assert.equal(Object.keys(migratedGroup.groups || {}).length, 1, "the group it spelled inside its members must come back as one container");
+assert.equal(migratedGroup.groups.g1.formal, true, "and as a group: nothing but a group the user made used to write a name down");
+assert.ok(Math.abs(app.drawing.placement.angleOf(migratedGroup.groups.g1.m) - Math.PI / 2) < 1e-9, "with the turn it had, read off the members it was written on");
+assert.ok(migratedGroup.groups.g1.rect.width > 1 && migratedGroup.groups.g1.rect.height > 1,
+  "and a rectangle of its own, measured around the members, since the old record named none");
+assert.equal(migratedGroup.objects[0].groupRotation, undefined, "while the copy left on the members must be dropped: they name the container now, and nothing else");
+assert.equal(migratedGroup.objects[0].groupPivot, undefined);
+assert.equal(migratedGroup.objects[1].groupRotation, undefined);
+console.log("workspace.test.mjs: ok (64 KiB chunking, migration, history, restore, watchdog, cancel, generation queue, raw prompts, group containers saved and read back)");

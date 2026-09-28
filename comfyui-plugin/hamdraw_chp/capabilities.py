@@ -1,4 +1,4 @@
-"""The CVP capability table, and the one document that describes it.
+"""The CHP capability table, and the one document that describes it.
 
 This module is the single source of truth for *what this server can do*.  The
 HTTP layer, the config node and the offline tests all read it; adding a
@@ -18,7 +18,7 @@ Three ideas hold it together:
   a client that was written against an older name working.
 
 The meanings of the fields themselves live in :data:`INPUT_SCHEMAS` and in
-``plans/cvp-spec.md``; nothing here may invent a per-capability meaning for a
+``plans/chp-spec.md``; nothing here may invent a per-capability meaning for a
 shared field.
 """
 
@@ -33,20 +33,16 @@ from .version import __version__
 
 #: The protocol version.  It is reported in the document and never in a path —
 #: see the spec's principle 2.
-SPEC = "cvp/1"
+SPEC = "chp/1"
 
-API_ROOT = "/cvp"
-#: The paths shipped clients (and PoseGi) already call.  Kept as aliases that
-#: answer the *old* document shapes; see :mod:`legacy`.
-LEGACY_ROOT = "/hamdraw/v1"
+API_ROOT = "/chp"
+#: The previous primary root.  It answered — and still answers — the *same*
+#: document shapes as :data:`API_ROOT`, so it is an alias, not a legacy
+#: projection: a client that hardcoded ``/cvp`` keeps working untouched.
+ALIAS_ROOTS: tuple[str, ...] = ("/cvp",)
 
-#: Legacy schema strings, still reported by the legacy projections so a client
-#: that compares them does not reject the server.
-API_SCHEMA = "hamdraw-comfy/v2"
-DISCOVERY_SCHEMA = "hamdraw-comfy/discovery/v1"
-
-PLUGIN_ID = "hamdraw_comfy"
-PLUGIN_LABEL = {"zh": "ComfyUI HamDraw 插件", "en": "ComfyUI HamDraw Plugin"}
+PLUGIN_ID = "hamdraw_chp"
+PLUGIN_LABEL = {"zh": "ComfyUI HamDraw 插件 CHP", "en": "ComfyUI Hamdraw Plugin CHP"}
 
 #: The relative paths a client should use.  Given here so a client never has to
 #: assemble one itself.
@@ -526,8 +522,8 @@ def document(*, resolve: Resolver, authorized: bool, auth_required: bool, transl
 
 
 __all__ = [
-    "API_ROOT", "API_SCHEMA", "CAPABILITIES", "CATEGORIES", "DISCOVERY_SCHEMA", "ENDPOINTS",
-    "GROW_MASK_RANGE", "INPUT_SCHEMAS", "LEGACY_ROOT", "PLUGIN_ID", "PLUGIN_LABEL",
+    "ALIAS_ROOTS", "API_ROOT", "CAPABILITIES", "CATEGORIES", "ENDPOINTS",
+    "GROW_MASK_RANGE", "INPUT_SCHEMAS", "PLUGIN_ID", "PLUGIN_LABEL",
     "REF_STRENGTH_RANGE", "ROLE_FOLDERS", "SIZE_STEP", "SPEC", "capabilities",
     "clamp_ref_strength", "clean_defaults", "document", "entry", "find", "fits",
     "ids", "names", "sizes", "spec_of", "validate_values", "values",

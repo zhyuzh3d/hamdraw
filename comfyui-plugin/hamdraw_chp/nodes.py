@@ -7,7 +7,7 @@ of the translator.  Queueing it once writes ``hamdraw_settings.json`` next to
 the plugin, so the HTTP API picks the values up immediately without restarting
 ComfyUI.
 
-The graphs themselves are built by :mod:`hamdraw_comfy.families`, not here:
+The graphs themselves are built by :mod:`hamdraw_chp.families`, not here:
 the HTTP layer is the only entry point, and it always uses those built-in
 graphs.  ``HamDrawInput`` / ``HamDrawOutput`` are the two node classes those
 graphs reference — a reader can put them in a window and see what HamDraw

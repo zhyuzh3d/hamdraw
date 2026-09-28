@@ -2,12 +2,12 @@
 """Build or verify the deterministic HamDraw ComfyUI plugin archive.
 
 The archive unpacks straight into ComfyUI's `custom_nodes/` directory, so the
-`hamdraw_comfy/` folder is the top-level entry rather than a nested one. Like
+`hamdraw_chp/` folder is the top-level entry rather than a nested one. Like
 the happ archive this is byte-for-byte reproducible: fixed timestamps, sorted
 entries, no compression surprises.
 
 The version number is never written here: it is read from
-``hamdraw_comfy/version.py`` so the zip name and the number the plugin reports
+``hamdraw_chp/version.py`` so the zip name and the number the plugin reports
 over HTTP can never drift apart.
 
 Usage:
@@ -24,15 +24,15 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "comfyui-plugin"
-VERSION_FILE = SOURCE / "hamdraw_comfy" / "version.py"
+VERSION_FILE = SOURCE / "hamdraw_chp" / "version.py"
 FIXED_TIMESTAMP = (2026, 9, 17, 0, 0, 0)
-ENTRIES = ("hamdraw_comfy", "README.md")
+ENTRIES = ("hamdraw_chp", "README.md")
 
 
 def plugin_version() -> str:
     """Read ``__version__`` out of version.py without importing the package.
 
-    Importing ``hamdraw_comfy`` would pull in ``folder_paths`` and ``aiohttp``,
+    Importing ``hamdraw_chp`` would pull in ``folder_paths`` and ``aiohttp``,
     neither of which exists on the machine that builds the zip.
     """
     namespace: dict[str, object] = {}

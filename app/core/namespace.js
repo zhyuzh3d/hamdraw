@@ -4,7 +4,7 @@
   var app = global.hamdraw = global.hamdraw || {};
   var listeners = {};
 
-  app.version = "0.5.14";
+  app.version = "0.5.33";
   app.events = {
     on: function (name, listener) {
       listeners[name] = listeners[name] || [];
@@ -51,6 +51,10 @@
     selectedId: "",
     selectedIds: [],
     objects: [],
+    // The containers a drawing is holding: one entry per group, carrying the group's own placement
+    // and the rectangle it is. The members only name one, which is what lets a group be transformed
+    // - and gives a group a rectangle of its own to be selected and resized by.
+    groups: {},
     result: null,
     renderResult: null,
     // The cover is the last generated picture, kept as a reference into Haminn's file
@@ -63,18 +67,18 @@
   };
 
   app.defaults = {
-    schema: 8,
+    schema: 10,
     preferences: { theme: "system", language: "zh" },
     // One ComfyUI plugin serves all three tasks, so they share one connection:
-    // address, password and custom headers live here and are copied into every CVP
-    // task on load and on save. Selecting CVP in another task adopts this; editing it
+    // address, password and custom headers live here and are copied into every CHP
+    // task on load and on save. Selecting CHP in another task adopts this; editing it
     // anywhere edits all three. The task-specific settings stay per task.
     connection: { endpoint: "", apiKey: "", customHeaders: "" },
     quick: {
       slot: "quick",
       task: "quick",
       name: "快速生图",
-      protocol: "cvp",
+      protocol: "chp",
       endpoint: "",
       apiKey: "",
       model: "",
@@ -94,7 +98,7 @@
       slot: "inpaint",
       task: "inpaint",
       name: "局部重绘",
-      protocol: "cvp",
+      protocol: "chp",
       endpoint: "",
       apiKey: "",
       model: "",
@@ -114,13 +118,17 @@
       slot: "upscale",
       task: "upscale",
       name: "高清渲染",
-      protocol: "cvp",
+      protocol: "chp",
       endpoint: "",
       apiKey: "",
       model: "",
       inputMode: "sketch",
       width: 1024,
       height: 1024,
+      // The numbers below belong to the capability this slot submits, which is the
+      // plugin's `upscale` — the same word this slot uses. They are only the starting
+      // point: once /chp/info has been read they come from what the capability
+      // declares, and the sheet prints them rather than offering them.
       steps: 8,
       refStrength: 0.75,
       growMaskBy: 8,

@@ -60,7 +60,7 @@ def build(
 ) -> dict[str, Any]:
     """Build the graph for one already-validated request.
 
-    ``spec`` comes from :func:`hamdraw_comfy.capabilities.spec_of`, so the
+    ``spec`` comes from :func:`hamdraw_chp.capabilities.spec_of`, so the
     enumerations were checked before anything here runs; this function's only
     job is picking the family and shaping the arguments.
     """

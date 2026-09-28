@@ -83,16 +83,16 @@
     delete revisions[key]; delete chunkManifests[key];
     cleanupChunks(key, manifest).catch(function () {});
   }
-  // Every request path reads config[slot].endpoint, so a shared CVP connection is
-  // kept as one object here and re-derived into each CVP task. That way editing the
+  // Every request path reads config[slot].endpoint, so a shared CHP connection is
+  // kept as one object here and re-derived into each CHP task. That way editing the
   // connection in any task edits all three, while the task-specific settings (size,
   // steps, reference weight, mask grow) stay per task.
-  function shareCvpConnection(config) {
+  function shareChpConnection(config) {
     var connection = app.utils.merge({ endpoint: "", apiKey: "", customHeaders: "" }, config.connection || {});
     config.connection = connection;
     ["quick", "inpaint", "upscale"].forEach(function (name) {
       var model = config[name];
-      if (!model || model.protocol !== "cvp") return;
+      if (!model || model.protocol !== "chp") return;
       model.endpoint = connection.endpoint; model.apiKey = connection.apiKey; model.customHeaders = connection.customHeaders;
     });
     return config;
@@ -101,8 +101,20 @@
     var previousSchema = Number(stored && stored.schema) || 0;
     var original = app.utils.merge(app.defaults, stored || {});
     var value = app.utils.copy(original), changed = previousSchema < 7;
+    if (previousSchema < 9) {
+      // Schema 9 renamed the API format together with the plugin that implements
+      // it: CVP became CHP (`chp/1`, served at `/chp`, with `/cvp` kept as an
+      // alias root on the plugin). It has to happen here rather than at the
+      // comparison sites: a stored id no format in the picker answers to would
+      // open the dialog with nothing selected and make `generate()` refuse the
+      // task, which reads as "my model broke" rather than "the name changed".
+      ["quick", "inpaint", "upscale"].forEach(function (name) {
+        var carried = value[name];
+        if (carried && carried.protocol === "cvp") carried.protocol = "chp";
+      });
+    }
     if (previousSchema < 7) {
-      // Schema 7 split the two-model setup into the three CVP tasks: the old
+      // Schema 7 split the two-model setup into the three CHP tasks: the old
       // "quality" slot becomes the upscale task, and local redraw gains a slot
       // of its own. A new install simply keeps the defaults.
       value.upscale = app.utils.merge(app.utils.copy(app.defaults.upscale), stored && stored.quality || {});
@@ -117,11 +129,11 @@
       var model = value[name];
       if (!model) return;
       // The A1X native API and the generic ComfyUI workflow contract are both
-      // retired, so such a slot becomes a CVP slot. The connection the user
-      // typed is kept; the task-shaped fields fall back to the CVP defaults.
+      // retired, so such a slot becomes a CHP slot. The connection the user
+      // typed is kept; the task-shaped fields fall back to the CHP defaults.
       var retired = model.protocol === "a1x-flux" || model.protocol === "a1x-image" || model.protocol === "comfyui";
       if (retired) {
-        model.protocol = "cvp";
+        model.protocol = "chp";
         model.width = model.height = name === "upscale" ? 1024 : 512;
         model.steps = app.defaults[name].steps;
         model.inputMode = "sketch";
@@ -129,25 +141,42 @@
         model.workflow = "";
         model.guidanceScale = 1;
       }
-      // `slot`, `task` and `capability` all name the same thing here: the app's
-      // word for the capability, which is what a CVP job is submitted under.
+      // `slot`, `task` and `capability` all name the app's own word for the
+      // task. For quick and redraw that word is also the plugin's capability
+      // id; for the render slot it is not — `capability` is resolved through
+      // the map in services/providers.js, where it becomes `render`.
       model.slot = name; model.task = name; model.capability = name;
       if (!Number.isFinite(Number(model.refStrength)) || Number(model.refStrength) <= 0) model.refStrength = app.defaults[name].refStrength;
       if (!Number.isFinite(Number(model.growMaskBy))) model.growMaskBy = 8;
     });
     if (previousSchema < 8) {
-      // Schema 8 shares one CVP connection across the three tasks: the address a
-      // configured CVP task already had becomes that connection and the other tasks
+      // Schema 8 shares one CHP connection across the three tasks: the address a
+      // configured CHP task already had becomes that connection and the other tasks
       // follow it instead of keeping their own.
       var donor = ["quick", "inpaint", "upscale"].map(function (name) { return value[name]; }).filter(function (model) {
-        return model && model.protocol === "cvp" && String(model.endpoint || "").trim();
+        return model && model.protocol === "chp" && String(model.endpoint || "").trim();
       })[0];
       if (donor) value.connection = { endpoint: donor.endpoint, apiKey: donor.apiKey || "", customHeaders: donor.customHeaders || "" };
     }
-    shareCvpConnection(value);
+    if (previousSchema < 10) {
+      // Schema 10 locks the three CHP tasks to their capabilities. The render slot
+      // used to carry numbers tuned for a different one — 20 steps and a 0.95
+      // reference weight went with the capability it briefly submitted — and a
+      // stored pair like that still runs, so nothing else would ever correct it.
+      // It is re-derived here from the app's own defaults, which is what the sheet
+      // prints and what an unconfigured install starts from.
+      var render = value.upscale;
+      if (render && render.protocol === "chp") {
+        render.width = app.defaults.upscale.width;
+        render.height = app.defaults.upscale.height;
+        render.steps = app.defaults.upscale.steps;
+        render.refStrength = app.defaults.upscale.refStrength;
+      }
+    }
+    shareChpConnection(value);
     value.canvas = value.canvas || {};
     delete value.canvas.overlayGenerate; delete value.canvas.includeResult; delete value.canvas.resultOpacity;
-    value.schema = 8;
+    value.schema = 10;
     return { value: value, changed: changed || JSON.stringify(value) !== JSON.stringify(original), migrateWorkTitles: previousSchema < 6 };
   }
   function isUntitledTitle(title) { return /^(?:未命名作品\d+|Untitled artwork\s+\d+)$/.test(String(title || "")); }
@@ -179,7 +208,7 @@
     return app.config;
   }
   async function saveConfig(config) {
-    var value = shareCvpConnection(app.utils.merge(app.defaults, config));
+    var value = shareChpConnection(app.utils.merge(app.defaults, config));
     await serial(function () { return write("config", value); }); app.config = value;
     return value;
   }
@@ -193,11 +222,15 @@
     return stored;
   }
   function serializeCanvas() {
-    var snapshot = { schema: 10, objects: [], result: null, render: null, savedAt: Date.now() };
+    var snapshot = { schema: 11, objects: [], result: null, render: null, savedAt: Date.now() };
     fields.forEach(function (name) { snapshot[name] = app.state[name]; });
     snapshot.objects = app.state.objects.map(function (object) {
       return app.drawing.storageObject(object);
     });
+    // The containers go into the record beside the objects: a member only names its group, so the
+    // two are one fact and a record that carried one without the other would bring a turned group
+    // back upright - or name a group that is not there.
+    snapshot.groups = app.drawing.cloneGroups(app.state.groups);
     snapshot.result = storedImage(app.state.result);
     snapshot.render = storedImage(app.state.renderResult);
     // The cover is the last generated picture and is stored the same way: a reference,
@@ -296,8 +329,17 @@
     if (Number(copy.schema) < 8 || copy.resultAdjustmentsEnabled === undefined) copy.resultAdjustmentsEnabled = true;
     if (Number(copy.schema) < 9) { copy.layerOpacity = 1; copy.resultOpacity = copy.overlayGenerate ? 1 : 0.9; }
     if (Number(copy.schema) < 10) copy.render = null;
+    if (Number(copy.schema) < 11) {
+      // Schema 11 moved a group's turn and centre off the members and onto the container, which is
+      // now a node of its own. A record from before that spells the group inside every member, so
+      // the table is rebuilt from them - the group itself does not change, it is only written down
+      // somewhere else - and the copies left on the members are dropped, because the members now
+      // name the container and nothing else.
+      copy.groups = app.drawing.groupsFromMembers(copy.objects || []);
+      (copy.objects || []).forEach(function (object) { delete object.groupRotation; delete object.groupPivot; });
+    } else copy.groups = app.drawing.cloneGroups(copy.groups);
     if (!Number.isFinite(Number(copy.layerOpacity))) copy.layerOpacity = 1;
-    delete copy.includeResult; delete copy.referenceStrength; copy.schema = 10;
+    delete copy.includeResult; delete copy.referenceStrength; copy.schema = 11;
     var missing = false;
     for (var object of copy.objects || []) {
       if (object.type === "image") {
@@ -324,7 +366,7 @@
     var stored = await read("canvas", null), hydrated = await hydrate(stored);
     // Only a record already in the current shape can seed the fingerprint; an older
     // one is migrated by hydrate() and must be written back once.
-    if (stored && Number(stored.schema) >= 10) { lastCanvasFingerprint = fingerprint(stored); lastPersistedSnapshot = assetSnapshot(stored); }
+    if (stored && Number(stored.schema) >= 11) { lastCanvasFingerprint = fingerprint(stored); lastPersistedSnapshot = assetSnapshot(stored); }
     return hydrated;
   }
   function list() { return index.map(function (item) { return { id: item.id, title: item.title, createdAt: item.createdAt, updatedAt: item.updatedAt, hasResult: item.hasResult }; }); }

@@ -383,9 +383,6 @@
   function syncSelection() {
     var ids = app.state.selectedIds && app.state.selectedIds.length ? app.state.selectedIds : app.state.selectedId ? [app.state.selectedId] : [];
     var selectedObjects = app.state.objects.filter(function (object) { return ids.indexOf(object.id) >= 0; });
-    var groupedObjects = selectedObjects.filter(function (object) { return Boolean(object.groupId); });
-    var groupIds = groupedObjects.map(function (object) { return object.groupId; }).filter(function (id, index, values) { return values.indexOf(id) === index; });
-    var alreadyOneGroup = ids.length > 1 && groupedObjects.length === ids.length && groupIds.length === 1;
     var selectedStrokes = selectedObjects.filter(function (object) { return object.type === "stroke"; });
     var strokeColors = selectedStrokes.map(function (object) { return object.color || app.state.color; }).filter(function (color, index, values) { return values.indexOf(color) === index; });
     var colorButton = node("selection-color"), colorSwatch = colorButton.querySelector(".selection-color-swatch");
@@ -394,7 +391,13 @@
     node("selection-color-label").textContent = t("变色", "Color"); colorButton.disabled = selectedStrokes.length === 0;
     colorSwatch.style.backgroundColor = strokeColors.length ? strokeColors[0] : "";
     colorSwatch.style.backgroundImage = strokeColors.length > 1 ? "linear-gradient(135deg,#ee4f85 0 50%,#38a9e8 50%)" : "none";
-    node("group-selected").disabled = ids.length < 2 || alreadyOneGroup; node("ungroup-selected").disabled = groupedObjects.length === 0;
+    // Group and Ungroup are about a group, so both ask the canvas whether there is one - never
+    // whether several things are selected. A selection that has only been turned, pulled or carried
+    // is inside a temporary container like any other, and a temporary container is not a group: the
+    // Group button stays live all through a transform and goes dead only once the selection is
+    // already one group, and Ungroup is live only when what is selected is really grouped. Asking
+    // the mutator's own predicate is what keeps the two from drifting apart.
+    node("group-selected").disabled = !canvas.canGroupSelected(); node("ungroup-selected").disabled = !canvas.canUngroupSelected();
     // Layering asks the canvas itself whether anything can still move, so the arrows stay
     // live for a group (all of its members arrive selected at once) and grey out only once
     // the block as a whole has reached the front or the back. Asking the mutator's own

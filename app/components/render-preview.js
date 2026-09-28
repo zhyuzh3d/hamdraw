@@ -3,12 +3,15 @@
   var root, stage, image, surface, zoom, adjustmentsPanel, transformTask, surfaceTask;
   var current = null, scale = 1, offsetX = 0, offsetY = 0;
   var pointers = {}, gesture = null, previousOverflow = "", stageRect = null, sourceReady = false;
-  // Brightness and contrast are not offered here, so the preview always draws with
-  // them neutral: the shared filter builder must receive numbers, and the four
-  // sliders this panel does own are the ones worth carrying.
-  var NEUTRAL = { resultBrightness: 100, resultContrast: 100 };
-  var adjustments = { resultSaturation: 100, resultHue: 0, resultGlow: 0, resultClarity: 0 };
-  var adjustmentKeys = ["resultSaturation", "resultHue", "resultGlow", "resultClarity"];
+  //: The panel carries the same six sliders the canvas panel does — brightness and
+  //: contrast included, and leading the panel the way they lead that one. They are not
+  //: decoration: this panel is the only place the saved render default can be seen and
+  //: changed, and a preview that cannot show what that default does is not a preview of
+  //: it. Every key here is also a `config.canvas` field, so this one list drives the
+  //: sliders, the redraw, the reset and the saved default.
+  var ADJUSTMENT_DEFAULTS = { resultBrightness: 100, resultContrast: 100, resultSaturation: 100, resultHue: 0, resultGlow: 0, resultClarity: 0 };
+  var adjustmentKeys = ["resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity"];
+  var adjustments = app.utils.copy(ADJUSTMENT_DEFAULTS);
   //: Whether the adjustments reach the picture at all. It is part of the same draft
   //: as the sliders' values: it starts from the saved render default, governs this
   //: preview only, and is written where the other values are written — the
@@ -73,12 +76,12 @@
     var result = {};
     adjustmentKeys.forEach(function (key) {
       var value = Number(app.config && app.config.canvas && app.config.canvas[key]);
-      result[key] = Number.isFinite(value) ? value : ({ resultSaturation: 100, resultHue: 0, resultGlow: 0, resultClarity: 0 }[key]);
+      result[key] = Number.isFinite(value) ? value : ADJUSTMENT_DEFAULTS[key];
     });
     return result;
   }
   function configuredEffects() { return !(app.config && app.config.canvas && app.config.canvas.resultAdjustmentsEnabled === false); }
-  function resetAdjustments() { adjustments = { resultSaturation: 100, resultHue: 0, resultGlow: 0, resultClarity: 0 }; syncAdjustments(); surfaceTask.request(); }
+  function resetAdjustments() { adjustments = app.utils.copy(ADJUSTMENT_DEFAULTS); syncAdjustments(); surfaceTask.request(); }
   function closeAdjustments() { adjustmentsPanel.hidden = true; document.getElementById("render-preview-adjust").setAttribute("aria-expanded", "false"); }
   async function saveAdjustmentsDefault() {
     var config = app.utils.copy(app.config);
@@ -97,8 +100,8 @@
       // The switch is what makes the panel reversible: with it off the preview draws
       // the plain render, which is the only way to see what the sliders did.
       resultAdjustmentsEnabled: adjustmentsEnabled !== false,
-      resultBrightness: NEUTRAL.resultBrightness,
-      resultContrast: NEUTRAL.resultContrast,
+      resultBrightness: adjustments.resultBrightness,
+      resultContrast: adjustments.resultContrast,
       resultSaturation: adjustments.resultSaturation,
       resultHue: adjustments.resultHue,
       resultGlow: adjustments.resultGlow,

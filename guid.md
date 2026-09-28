@@ -9,7 +9,7 @@
 - 本地优先：作品、配置、图片引用全在本机 happ 隔离数据区，不内置任何平台 API Key。模型由用户自己配置。
 - 三个任务槽位互相独立：快速生图 / 局部重绘 / 高清渲染。画幅、步数、参考强度由所选接口的内置规格决定，不由用户填。
 - 绘图内核：原生 Canvas 矢量笔触（铅笔 / 涂色 / 擦除 / 框选 / 成组 / 移动 / 复制 / 图层 / 局部蒙版 / 撤销重做），历史快照保存提示词与画面参数。
-- 接口模式：CVP（ComfyUI Hamdraw Plugin，推荐）/ OpenAI Images 兼容 / Stable Diffusion WebUI · Forge / Stability AI v2beta。CVP 走 A1X 掌机的 ComfyUI，插件源码在本仓 `comfyui-plugin/`。
+- 接口模式：CHP（ComfyUI Hamdraw Plugin CHP，推荐）/ OpenAI Images 兼容 / Stable Diffusion WebUI · Forge / Stability AI v2beta。CHP 走 A1X 掌机的 ComfyUI，插件源码在本仓 `comfyui-plugin/`。
 
 ## 目录结构
 

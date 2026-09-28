@@ -7,7 +7,7 @@ HamDraw 是一个可直接运行在 [Haminn](https://haminn.airen.life/) 宿主�
 > 产品网站：<https://hamdraw.airen.life/> · 应用广场：<https://haminn.airen.life/pages/happs.html> · 源码仓库：<https://github.com/zhyuzh3d/hamdraw> · [GitHub Releases](https://github.com/zhyuzh3d/hamdraw/releases) · [MIT License](./LICENSE)
 
 - happ id：`life.airen.hamdraw`
-- 当前源码版本：`0.5.12`(versionCode `88`,见 `haminn.json`)
+- 当前源码版本：`0.5.33`(versionCode `109`,见 `haminn.json`)
 - 形态：HaminnApp 的普通 happ,不能脱离宿主单独安装,纯原生 HTML / CSS / JavaScript,没有构建步骤
 
 ## 演示视频
@@ -33,7 +33,7 @@ https://github.com/user-attachments/assets/64923327-a8eb-4864-b0fc-7e51539d1718
 - **作品级控制**：绘制稿强度,可锁定随机种子,笔刷等待和「叠加生成」随历史快照保存,开启叠加时提交当前完整合成,关闭时忽略成图并以不透明元素和背景提交。
 - **三个任务槽位互相独立**：快速生图 / 局部重绘 / 高清渲染。画幅,步数与参考图权重由所选接口的内置规格决定,高清渲染原样提交当前可见画布并要求返回真实 1024 × 1024 图片,在支持双指缩放,拖动和下载的全屏窗口中预览。
 - **历史作品**：自动保存,缩略图,按可视区域加载,搜索,继续编辑,创建副本,删除,恢复提示词,笔触,导入图片,生成结果与画面参数。
-- **四种接口模式**：ComfyUI HamDraw Plugin(CVP,推荐),OpenAI Images 兼容,Stable Diffusion WebUI / Forge,Stability AI v2beta。支持可信局域网 HTTP 地址,公网服务要求 HTTPS。
+- **四种接口模式**：ComfyUI HamDraw Plugin CHP(推荐),OpenAI Images 兼容,Stable Diffusion WebUI / Forge,Stability AI v2beta。支持可信局域网 HTTP 地址,公网服务要求 HTTPS。
 - **本地优先**：模型配置和画布 JSON 保存在当前 happ 的隔离数据区,图片只存文件引用,服务返回的图片文件直接使用 Haminn 逻辑文件,内联图片通过当前公开文件接口编码为有界文件块,不把图片字节或 data URL 写入数据库。
 - **导出**：生成工具栏的下载按钮保存当前画布实际显示效果,渲染预览中的下载按钮单独保存模型返回的 1024 大图。普通浏览器导出 PNG,Haminn 当前没有任意二进制文件写入接口,因此内联合成画面导出为可打开的 SVG 预览,服务以文件返回的图片可原格式导出。
 - **外观与语言**：浅色,深色,跟随系统三种主题,中文与英文,弹窗,确认,按钮和 Toast 使用同一组件体系。内建本地 Font Awesome Free,不访问 CDN。
@@ -51,20 +51,20 @@ HamDraw 是 HaminnApp 的 happ,**不能脱离宿主单独安装**。
 ## 快速上手
 
 1. 打开 HamDraw,在设置里选择一个接口模式并填入地址(公网用 HTTPS,可信局域网可用 HTTP)。
-2. 选好模型与参数(CVP 模式下参数由插件按任务下发),回到画布。
+2. 选好模型与参数(CHP 模式下参数由插件按任务下发),回到画布。
 3. 涂几笔,写一句提示词,点快速生图,想重画某块就切局部重绘并涂上蒙版,想要高清成品就点高清渲染。
 4. 生成时可继续绘图,快速操作会合并排队,不满意可撤销或从历史作品里继续编辑。
 
-## ComfyUI HamDraw Plugin(CVP)
+## ComfyUI HamDraw Plugin CHP
 
-`comfyui-plugin/hamdraw_comfy/` 是 HamDraw 推荐使用的**统一本地接口**：把它放进 ComfyUI 的 `custom_nodes/` 并重启,客户端**不需要导出任何工作流 JSON**,只报能力名和当前画布。
+`comfyui-plugin/hamdraw_chp/` 是 HamDraw 推荐使用的**统一本地接口**：把它放进 ComfyUI 的 `custom_nodes/` 并重启,客户端**不需要导出任何工作流 JSON**,只报能力名和当前画布。
 
-- 接口根路径 `/cvp`(不随版本变化),规范标识 `cvp/1`,新客户端第一步调公开的 `GET /cvp/info`,一次拿到能力清单,请求 schema,模型槽位与就绪状态。
+- 接口根路径 `/chp`(不随版本变化),规范标识 `chp/1`,新客户端第一步调公开的 `GET /chp/info`,一次拿到能力清单,请求 schema,模型槽位与就绪状态。`/cvp` 是插件的**别名根**,返回完全相同的文档,只为已经装出去的老客户端保留;`/hamdraw/v1` 那层旧投影已经删除,不再提供。
 - 四个能力：`quick`(快速生图),`inpaint`(局部重绘,白 = 要重画),`upscale`(放大绘制),`render`(用 Qwen-Image 出成品图)。**画幅不锁死在一张手写清单上**：每个能力用 `size_domain` 声明自己的对齐步长,最短/最长边与像素预算,`values.size` 只是按这个域算出来的推荐枚举；请求里的 `size` 按域判,越界返 `unsupported_size`。步数按枚举判,`ref_strength` 是唯一的参考图权重入口(值域 0.05–0.95)。
 - 用户在 ComfyUI 里只需要操作一个节点 **HamDraw 配置(Config)**：设访问密码,挑三套 checkpoint,以及高质量那一路的三个模型槽位。密码填错时请求在入队之前就返回 `401`,不会生图,密码留空则不校验。
 - 完整 HTTP 契约,配置字段与离线自测见 [comfyui-plugin/README.md](./comfyui-plugin/README.md)。
 
-插件版本只有一个出处：`comfyui-plugin/hamdraw_comfy/version.py` 的 `__version__`(当前 `2.3.0`)。仓库内构建发布包：
+插件版本只有一个出处：`comfyui-plugin/hamdraw_chp/version.py` 的 `__version__`(当前 `2.4.0`)。仓库内构建发布包：
 
 ```sh
 python3 tools/package-plugin.py          # 生成确定性 zip(固定时间戳与条目顺序)
@@ -74,10 +74,12 @@ python3 tools/package-plugin.py --check  # 只校验不写入
 官网安装卡片提供可直接下载的插件包(已核实可用)：
 
 ```text
-https://haminn.airen.life/downloads/hamdraw/hamdraw-comfyui-plugin-v2.0.1.zip
+https://haminn.airen.life/downloads/hamdraw/hamdraw-comfyui-plugin-v2.3.0.zip
 ```
 
-> 说明：线上当前发布到 `v2.0.1`,而本仓库插件源码已是 `v2.3.0`,想用最新源码请自行用上面的命令打包。
+> 说明：线上当前发布到 `v2.3.0`,而本仓库插件源码已是 `v2.4.0`(CHP 更名版),想用最新源码请自行用上面的命令打包。
+>
+> **从旧版升级要先删掉 `custom_nodes/hamdraw_comfy/`**：新旧两个包会各自注册一遍路由,同时存在会让 ComfyUI 因重复注册而启动失败。
 
 ## 项目结构
 
@@ -90,11 +92,11 @@ app/services/                    作品存储,文件资产,模型协议适配,�
 app/components/                  画布,统一弹层,设置与历史画廊
 app/features/                    页面用例编排
 styles/                          设计令牌与组件样式
-comfyui-plugin/                  ComfyUI HamDraw Plugin 源码与说明
+comfyui-plugin/                  ComfyUI HamDraw Plugin CHP 源码与说明
 tests/                           无第三方依赖的协议单元测试
 tools/verify.mjs                 静态合同检查入口
 tools/package.py                 运行包打包
-tools/package-plugin.py          CVP 插件打包
+tools/package-plugin.py          CHP 插件打包
 tools/performance-benchmark.mjs  可重复的克隆与存储分块基准
 docs/performance.md              HaminnApp 性能设计与诊断不变量
 ```
@@ -124,7 +126,7 @@ node tools/performance-benchmark.mjs # 性能基准
 - **HamDraw**(实时 AI 绘图)：<https://hamdraw.airen.life/> · <https://github.com/zhyuzh3d/hamdraw> —— **本仓库**
 - **PoseGi**(3D 摆姿生图)：<https://posegi.airen.life/> · <https://github.com/zhyuzh3d/PoseGi>
 
-三个 happ 都必须先装 Haminn 宿主,再在[应用广场](https://haminn.airen.life/pages/happs.html)添加。HamDraw 与 chataxi,PoseGi 互不依赖,只做相互推荐,PoseGi 也能复用本仓库的 CVP 插件接入方式。
+三个 happ 都必须先装 Haminn 宿主,再在[应用广场](https://haminn.airen.life/pages/happs.html)添加。HamDraw 与 chataxi,PoseGi 互不依赖,只做相互推荐,PoseGi 也能复用本仓库的 CHP 插件接入方式。
 
 ## 贡献
 

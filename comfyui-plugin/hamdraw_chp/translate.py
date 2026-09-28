@@ -42,7 +42,7 @@ from . import settings as settings_module
 
 MAX_TEXTS = 16
 MAX_TEXT_CHARS = 2000
-MEMORY_SCHEMA = "cvp-translation-memory/v1"
+MEMORY_SCHEMA = "chp-translation-memory/v1"
 MEMORY_FILE = "hamdraw_translations.json"
 TARGET = "en"
 

@@ -1,4 +1,4 @@
-"""HamDraw ComfyUI plugin.
+"""ComfyUI HamDraw Plugin CHP.
 
 Drop this folder into ``ComfyUI/custom_nodes/`` and restart ComfyUI.  Then:
 
@@ -7,11 +7,11 @@ Drop this folder into ``ComfyUI/custom_nodes/`` and restart ComfyUI.  Then:
    three files the ``render`` capability needs, and Queue once.  Leaving the
    password empty turns authentication off.
 2. Point the client at this machine's address; it discovers the rest through
-   ``GET /cvp/info``.
+   ``GET /chp/info``.
 
 The plugin ships its own graphs for all four capabilities — quick draw, local
 redraw, upscale and a high-quality render — so no API workflow export is ever
-needed.  The contract is described in ``plans/cvp-spec.md``.
+needed.  The contract is described in ``plans/chp-spec.md``.
 """
 
 from __future__ import annotations
@@ -24,4 +24,4 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
 ROUTES_REGISTERED = server_module.register_routes()
 
 if not ROUTES_REGISTERED:
-    print("[HamDraw] HTTP 路由未注册：ComfyUI 服务实例还不可用，hamdraw 客户端将无法连接。")
+    print("[CHP] HTTP 路由未注册：ComfyUI 服务实例还不可用，客户端将无法连接。")

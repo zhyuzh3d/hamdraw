@@ -32,20 +32,25 @@
       step("drawing"); editor.resetWork(); app.state.autoGenerate = false; app.state.workTitle = "DEV self-test " + Date.now();
       app.state.autoDelayMs = 1320; app.state.resultGlow = 38; app.state.resultClarity = 24; app.state.colorStrength = 0.47; app.state.resultAdjustmentsEnabled = true;
       checks.defaultSeedLocked = app.state.seedLocked === true && Number.isSafeInteger(app.state.seed) && app.state.seed >= 0;
-      app.config.quick.endpoint = ""; app.config.quick.protocol = "cvp"; app.config.quick.model = ""; app.config.inpaint.endpoint = ""; app.config.upscale.endpoint = "";
+      app.config.quick.endpoint = ""; app.config.quick.protocol = "chp"; app.config.quick.model = ""; app.config.inpaint.endpoint = ""; app.config.upscale.endpoint = "";
       var target = document.getElementById("draft-canvas"), rect = target.getBoundingClientRect();
       var Type = window.PointerEvent || window.MouseEvent;
       function fire(name, x, y, pointerId, isPrimary) {
         target.dispatchEvent(new Type((window.PointerEvent ? "pointer" : "mouse") + name, { bubbles: true, isPrimary: isPrimary !== false, button: 0, pointerId: pointerId || 1, clientX: rect.left + rect.width * x, clientY: rect.top + rect.height * y }));
       }
       function stroke(tool, x, y) { editor.setTool(tool); fire("down", x, y); fire("move", x + 0.15, y + 0.15); fire("up", x + 0.15, y + 0.15); }
+      //: The handles are read as a named sequence, not counted. The four corners have to
+      //: keep their order - the resize check below indexes the fourth - and the turn
+      //: circle has to be there at all, which a bare count cannot tell apart from a
+      //: corner that moved.
+      function handleKeys() { return canvas.selectionHandles().map(function (handle) { return handle.key; }).join(","); }
       stroke("pencil", .15, .15);
       checks.draw = app.state.objects.length === 1;
       canvas.undo(); checks.undo = app.state.objects.length === 0;
       canvas.redo(); checks.redo = app.state.objects.length === 1;
       editor.setTool("select"); fire("down", .2, .2); fire("up", .2, .2);
       checks.select = Boolean(app.state.selectedId);
-      checks.strokeHandles = canvas.selectionHandles().length === 4;
+      checks.strokeHandles = handleKeys() === "nw,ne,sw,se,rotate";
       canvas.duplicateSelected(); canvas.scaleSelected(1.1); checks.transform = app.state.objects.length === 2;
       var originalStroke = app.state.objects[0], movedStroke = app.state.objects[1];
       var originalStartX = originalStroke.points[0].x, movedStartX = movedStroke.points[0].x;
@@ -81,21 +86,329 @@
       fire("down", (imageObject.x + 12) / 768, (imageObject.y + 12) / 768); fire("move", (imageObject.x + imageObject.width + 50) / 768, (imageObject.y + imageObject.height + 50) / 768); fire("up", (imageObject.x + imageObject.width + 50) / 768, (imageObject.y + imageObject.height + 50) / 768);
       checks.imageStartsMarquee = app.state.selectedIds.indexOf(imageObject.id) >= 0 && imageObject.x === imageBeforeMarquee.x && imageObject.y === imageBeforeMarquee.y;
       editor.setTool("select"); app.state.selectedIds = [imageObject.id]; app.state.selectedId = imageObject.id; canvas.render();
-      checks.imageHandles = canvas.selectionHandles().length === 4;
+      checks.imageHandles = handleKeys() === "nw,ne,sw,se,rotate";
       var handle = canvas.selectionHandles()[3], initialWidth = imageObject.width, initialRatio = imageObject.width / imageObject.height;
       fire("down", handle.x / 768, handle.y / 768); fire("move", (handle.x + 76) / 768, (handle.y + 57) / 768); fire("up", (handle.x + 76) / 768, (handle.y + 57) / 768);
       checks.cornerResize = imageObject.width > initialWidth * 1.2 && Math.abs(imageObject.width / imageObject.height - initialRatio) < 0.01;
+      // A corner pull is two drags, not one: pull further across than down and the box must come out
+      // longer than it was tall - the ratio is meant to change, which is what four independent
+      // corners are for - while the corner opposite stays exactly where the box promised it was.
+      var stretchedHandle = canvas.selectionHandles()[3], pinnedBefore = canvas.selectionHandles()[0];
+      var stretchedWidth = imageObject.width, stretchedHeight = imageObject.height;
+      fire("down", stretchedHandle.x / 768, stretchedHandle.y / 768); fire("move", (stretchedHandle.x + 120) / 768, (stretchedHandle.y + 20) / 768); fire("up", (stretchedHandle.x + 120) / 768, (stretchedHandle.y + 20) / 768);
+      var pinnedAfter = canvas.selectionHandles()[0];
+      checks.cornerResizeTwoAxes = Math.abs(imageObject.width - (stretchedWidth + 120)) < 1 && Math.abs(imageObject.height - (stretchedHeight + 20)) < 1
+        && Math.abs(imageObject.width / imageObject.height - stretchedWidth / stretchedHeight) > 0.05;
+      checks.cornerResizeHoldsOpposite = Math.abs(pinnedAfter.x - pinnedBefore.x) < 1 && Math.abs(pinnedAfter.y - pinnedBefore.y) < 1;
+      // That pull is a step of the journal of its own, so it is taken back here: the checks below
+      // count on the journal standing exactly where the first pull left it, and an extra entry
+      // would make the next undo land on the wrong state.
+      canvas.undo(); imageObject = app.state.objects.find(function (object) { return object.type === "image"; }); canvas.render();
       var resizedWidth = imageObject.width; canvas.undo(); var undoneImage = app.state.objects.find(function (object) { return object.type === "image"; });
       checks.resizeUndo = Math.abs(undoneImage.width - initialWidth) < 1; canvas.redo(); imageObject = app.state.objects.find(function (object) { return object.type === "image"; });
       checks.resizeRedo = Math.abs(imageObject.width - resizedWidth) < 1;
       app.state.selectedIds = [imageObject.id]; app.state.selectedId = imageObject.id; canvas.render();
-      var centerX = (imageObject.x + imageObject.width / 2) / 768, centerY = (imageObject.y + imageObject.height / 2) / 768, pinchWidth = imageObject.width;
+      var centerX = (imageObject.x + imageObject.width / 2) / 768, centerY = (imageObject.y + imageObject.height / 2) / 768, pinchWidth = imageObject.width, pinchRatio = imageObject.width / imageObject.height;
       fire("down", centerX - 0.06, centerY, 1, true); fire("down", centerX + 0.06, centerY, 2, false);
       fire("move", centerX - 0.1, centerY - 0.02, 1, true); fire("move", centerX + 0.1, centerY + 0.02, 2, false); fire("up", centerX + 0.1, centerY + 0.02, 2, false);
-      checks.pinchScale = imageObject.width > pinchWidth * 1.45 && Math.abs(imageObject.width / imageObject.height - initialRatio) < 0.01;
+      // Both axes together is the promise a pinch makes, so the shape it holds is the shape the
+      // pinch began with - read here rather than from the picture's first size, since a corner pull
+      // is allowed to have changed that in between.
+      checks.pinchScale = imageObject.width > pinchWidth * 1.45 && Math.abs(imageObject.width / imageObject.height - pinchRatio) < 0.01;
+      // The turn circle is driven through the same synthetic events as everything else, so
+      // the whole path runs: the hit test, the snapshot, the per-frame rebuild, the commit.
+      // Three drags that differ only in how far they go separate the three promises - a
+      // quarter turn lands exactly on sideways, a few degrees of residue is absorbed rather
+      // than left behind forever, and a real turn is not.
+      app.state.selectedIds = [imageObject.id]; app.state.selectedId = imageObject.id; canvas.render();
+      function turnGrip() { return canvas.selectionHandles().filter(function (handle) { return handle.key === "rotate"; })[0]; }
+      function cornerGrip(key) { return canvas.selectionHandles().filter(function (handle) { return handle.key === key; })[0]; }
+      //: Where a member is really drawn, read the way the canvas paints it - its own placement and
+      //: then its container's - and the container a member names, which is where a group's angle and
+      //: its size live now that a member only references one.
+      function drawnCentre(object) { var box = app.drawing.bounds(object); return { x: box.x + box.width / 2, y: box.y + box.height / 2 }; }
+      function containerOf(object) { return object && object.groupId ? app.drawing.groupNode(object.groupId) : null; }
+      function containerCount() { return Object.keys(app.state.groups || {}).length; }
+      function turnBy(degrees) {
+        var grip = turnGrip();
+        if (!grip) return false;
+        var centre = { x: imageObject.x + imageObject.width / 2, y: imageObject.y + imageObject.height / 2 };
+        var radius = Math.sqrt(Math.pow(grip.x - centre.x, 2) + Math.pow(grip.y - centre.y, 2));
+        var from = Math.atan2(grip.y - centre.y, grip.x - centre.x), to = from + degrees * Math.PI / 180;
+        var land = { x: centre.x + Math.cos(to) * radius, y: centre.y + Math.sin(to) * radius };
+        fire("down", grip.x / 768, grip.y / 768); fire("move", land.x / 768, land.y / 768); fire("up", land.x / 768, land.y / 768);
+        return true;
+      }
+      var turnCentre = { x: imageObject.x + imageObject.width / 2, y: imageObject.y + imageObject.height / 2 };
+      var gripBefore = turnGrip();
+      checks.turnHandleBelowBox = Boolean(gripBefore) && gripBefore.y > imageObject.y + imageObject.height && Math.abs(gripBefore.x - turnCentre.x) < 0.5;
+      // Half again the circle it was, and a reach to match: a bigger picture that had kept the old
+      // target would be the one change nobody could feel.
+      checks.turnHandleSize = Boolean(gripBefore) && gripBefore.radius === 27 && gripBefore.reach === 60;
+      // The owner's number for where the circle sits, read off the phone's own box rather than off
+      // the constant: it hangs 56 below the bottom edge, half of what it hung.
+      var gripFrame = canvas.selectionFrame();
+      checks.turnHandleGap = Boolean(gripBefore) && Math.abs(gripBefore.y - (gripFrame.y + gripFrame.height / 2) - 56) < 1;
+      checks.quarterTurn = turnBy(90) && Math.abs(app.drawing.normalizeAngle(app.drawing.rotationOf(imageObject) - Math.PI / 2)) < 0.002;
+      checks.turnSnapsUpright = turnBy(3) && Math.abs(app.drawing.normalizeAngle(app.drawing.rotationOf(imageObject) - Math.PI / 2)) < 0.002;
+      checks.turnFollowsPointer = turnBy(-40) && Math.abs(app.drawing.normalizeAngle(app.drawing.rotationOf(imageObject) - Math.PI / 2) + 40 * Math.PI / 180) < 0.01;
+      // A turn is a step of the journal of its own, and one turn is one step: the first undo takes
+      // back the drag that was just made and leaves the quarter turn standing, and it takes the
+      // second to bring the picture level again. Reading it as one undo for both would pass on a
+      // build that folded the two drags into one entry.
+      canvas.undo(); var lastTurnBack = app.state.objects.find(function (object) { return object.type === "image"; });
+      checks.turnUndo = Math.abs(app.drawing.normalizeAngle(app.drawing.rotationOf(lastTurnBack) - Math.PI / 2)) < 0.002;
+      canvas.undo(); var levelImage = app.state.objects.find(function (object) { return object.type === "image"; });
+      checks.turnUndoToLevel = Math.abs(app.drawing.rotationOf(levelImage)) < 0.002;
+      canvas.redo(); canvas.redo(); imageObject = app.state.objects.find(function (object) { return object.type === "image"; });
+      checks.turnRedo = Math.abs(app.drawing.normalizeAngle(app.drawing.rotationOf(imageObject) - Math.PI / 2) + 40 * Math.PI / 180) < 0.01;
+      // A turn about the centre of the box has to leave the centre where it was, or the
+      // picture would walk across the canvas while being turned.
+      var turnedBounds = app.drawing.bounds(imageObject);
+      checks.turnKeepsCentre = Math.abs(turnedBounds.x + turnedBounds.width / 2 - turnCentre.x) < 1 && Math.abs(turnedBounds.y + turnedBounds.height / 2 - turnCentre.y) < 1;
+      //: A lone object turns itself and is in no container at all - which is what makes the next
+      //: section's container something that only a selection of several can have.
+      checks.turnMakesNoContainer = containerCount() === 0;
       var strokeObject = app.state.objects.find(function (object) { return object.type === "stroke" && object.tool === "pencil"; });
       app.state.selectedIds = [strokeObject.id, imageObject.id]; app.state.selectedId = imageObject.id; canvas.render();
-      checks.multiSelectionHandles = canvas.selectionHandles().length === 4;
+      checks.multiSelectionHandles = handleKeys() === "nw,ne,sw,se,rotate";
+      // A selection of several is put into a container the first time it is transformed, and what is
+      // transformed is the container: one turn about one centre, with not one number of any member's
+      // own record touched. The members are left disagreeing on purpose - the picture is at the angle
+      // the last drag gave it and the stroke is upright - which is exactly the case that used to make
+      // the box give up and re-fit itself, so the box stopped following the selection it was drawing.
+      var strokePointBefore = { x: strokeObject.points[0].x, y: strokeObject.points[0].y };
+      var groupPictureAngle = app.drawing.rotationOf(imageObject);
+      var groupRecordBefore = { x: imageObject.x, y: imageObject.y, width: imageObject.width, height: imageObject.height };
+      var groupDrawnBefore = [imageObject, strokeObject].map(drawnCentre);
+      checks.noContainerBeforeGroupTurn = containerCount() === 0;
+      var groupFrameBefore = canvas.selectionFrame(), groupGrip = turnGrip();
+      var groupCentre = { x: groupFrameBefore.x, y: groupFrameBefore.y };
+      var groupRadius = Math.sqrt(Math.pow(groupGrip.x - groupCentre.x, 2) + Math.pow(groupGrip.y - groupCentre.y, 2));
+      var groupFrom = Math.atan2(groupGrip.y - groupCentre.y, groupGrip.x - groupCentre.x), groupTo = groupFrom + Math.PI / 2;
+      var groupLand = { x: groupCentre.x + Math.cos(groupTo) * groupRadius, y: groupCentre.y + Math.sin(groupTo) * groupRadius };
+      fire("down", groupGrip.x / 768, groupGrip.y / 768); fire("move", groupLand.x / 768, groupLand.y / 768); fire("up", groupLand.x / 768, groupLand.y / 768);
+      var groupStroke = app.state.objects.find(function (object) { return object.type === "stroke" && object.tool === "pencil"; });
+      var groupPicture = app.state.objects.find(function (object) { return object.type === "image"; });
+      var groupNode = containerOf(groupPicture);
+      checks.groupTurnSharesContainer = Boolean(groupNode) && containerCount() === 1 && groupStroke.groupId === groupPicture.groupId && app.drawing.groupNode(groupStroke.groupId) === groupNode;
+      checks.groupTurnContainerAngle = Boolean(groupNode) && Math.abs(app.drawing.normalizeAngle(app.drawing.placement.angleOf(groupNode.m) - Math.PI / 2)) < 1e-9;
+      checks.groupTurnKeepsOwnAngle = Math.abs(app.drawing.rotationOf(groupPicture) - groupPictureAngle) < 1e-12 && groupStroke.rotation === undefined && groupStroke.linear === undefined;
+      checks.groupTurnMovesNothing = groupStroke.points[0].x === strokePointBefore.x && groupStroke.points[0].y === strokePointBefore.y
+        && groupPicture.x === groupRecordBefore.x && groupPicture.y === groupRecordBefore.y && groupPicture.width === groupRecordBefore.width && groupPicture.height === groupRecordBefore.height;
+      // The box is the container's own rectangle carried by the container's own placement - never a
+      // rectangle measured afresh around what happens to be inside it, and never a guess at whether
+      // the members agree on an angle. A box built from either of those is the box that comes loose
+      // from the group the moment the group is turned.
+      var groupFrameAfter = canvas.selectionFrame();
+      checks.groupBoxIsContainer = Boolean(groupNode) && Math.abs(groupFrameAfter.angle - app.drawing.placement.angleOf(groupNode.m)) < 1e-9
+        && Math.abs(groupFrameAfter.width - groupNode.rect.width) < 1e-9 && Math.abs(groupFrameAfter.height - groupNode.rect.height) < 1e-9;
+      // The same promise read the other way round, on the two members themselves: each is drawn where
+      // the quarter turn put it - its drawn centre carried round the group's centre - so the whole
+      // selection moved as one rigid piece rather than each member turning about its own centre.
+      var groupDrawnAfter = [groupPicture, groupStroke].map(drawnCentre);
+      checks.groupTurnCarriesWhole = groupDrawnAfter.every(function (centre, index) {
+        var carriedX = groupCentre.x - (groupDrawnBefore[index].y - groupCentre.y), carriedY = groupCentre.y + (groupDrawnBefore[index].x - groupCentre.x);
+        return Math.abs(centre.x - carriedX) < 1 && Math.abs(centre.y - carriedY) < 1;
+      });
+      // The two buttons the owner asked about, read from the page itself. 成组 and 解散 are about a
+      // group, never about the box a selection happens to be wearing: this selection has just been
+      // turned, so it is inside a container - and a temporary one, which is not a group - and the two
+      // buttons must read exactly as they did before the turn. Before the fix the first transform of a
+      // selection switched 成组 off and 解散 on, as though the box were a group. Read after two frames,
+      // because the selection the buttons are armed from arrives through a frame task.
+      var groupButton = document.getElementById("group-selected"), ungroupButton = document.getElementById("ungroup-selected");
+      function buttonsSettled() { return new Promise(function (resolve) { requestAnimationFrame(function () { requestAnimationFrame(resolve); }); }); }
+      await buttonsSettled();
+      checks.groupButtonsOnTemporaryContainer = containerCount() === 1 && groupNode.formal === false
+        && canvas.canGroupSelected() === true && canvas.canUngroupSelected() === false
+        && groupButton.disabled === false && ungroupButton.disabled === true;
+      // And 解散 on a mere selection has to leave its container standing rather than fold a transform
+      // the user is in the middle of into the members - the same mistake read from the other side, and
+      // the reason the predicate is asked by the mutator and not only by the button.
+      var refuseFrame = canvas.selectionFrame();
+      canvas.ungroupSelected();
+      checks.ungroupRefusesTemporaryContainer = containerCount() === 1 && Boolean(containerOf(groupPicture)) && containerOf(groupPicture).formal === false
+        && app.state.selectedIds.length === 2 && Math.abs(canvas.selectionFrame().angle - refuseFrame.angle) < 1e-12;
+      // Taken on its own a member is boxed by its own record carried by its whole placement - its own
+      // turn and the container's - so it comes back at the angle it is drawn at and at its own size.
+      // Reading the container's angle alone put the box at half the turn.
+      app.state.selectedIds = [groupPicture.id]; app.state.selectedId = groupPicture.id; canvas.render();
+      var loneTurnedFrame = canvas.selectionFrame();
+      checks.groupTurnLoneBox = Boolean(groupNode) && Math.abs(loneTurnedFrame.angle - app.drawing.normalizeAngle(app.drawing.rotationOf(groupPicture) + app.drawing.placement.angleOf(groupNode.m))) < 1e-9
+        && Math.abs(loneTurnedFrame.width - groupPicture.width) < 1e-9 && Math.abs(loneTurnedFrame.height - groupPicture.height) < 1e-9;
+      app.state.selectedIds = [groupStroke.id, groupPicture.id]; app.state.selectedId = groupPicture.id; canvas.render();
+      // A corner pull on that same selection is still the two-axis pull it has always been, and it is
+      // one stretch for the whole selection because it is written on the container. The finger travels
+      // along the box's own top edge, which on a turned box is not the screen's, and every point of
+      // the stroke must land where a stretch of the box's own axes puts it - while the picture's own
+      // record is not touched at all, which is what "the container is what is transformed" means.
+      var pullFrame = canvas.selectionFrame(), pullPin = cornerGrip("nw"), pullGrabbed = cornerGrip("se");
+      var pullPictureBefore = { x: groupPicture.x, y: groupPicture.y, width: groupPicture.width, height: groupPicture.height, rotation: app.drawing.rotationOf(groupPicture) };
+      var pullInkBefore = groupStroke.points.map(function (point) { return app.drawing.placement.apply(app.drawing.placedMap(groupStroke), point.x, point.y); });
+      var pullReach = 0.6 * pullFrame.width;
+      var pullAway = { x: pullGrabbed.x + pullReach * Math.cos(pullFrame.angle), y: pullGrabbed.y + pullReach * Math.sin(pullFrame.angle) };
+      fire("down", pullGrabbed.x / 768, pullGrabbed.y / 768); fire("move", pullAway.x / 768, pullAway.y / 768); fire("up", pullAway.x / 768, pullAway.y / 768);
+      var pulledPicture = app.state.objects.find(function (object) { return object.type === "image"; });
+      var pulledStroke = app.state.objects.find(function (object) { return object.type === "stroke" && object.tool === "pencil"; });
+      var pullInkAfter = pulledStroke.points.map(function (point) { return app.drawing.placement.apply(app.drawing.placedMap(pulledStroke), point.x, point.y); });
+      var pullCos = Math.cos(pullFrame.angle), pullSin = Math.sin(pullFrame.angle);
+      checks.mixedGroupPullIsPerAxis = pullInkBefore.every(function (point, index) {
+        var sideX = (point.x - pullPin.x) * pullCos + (point.y - pullPin.y) * pullSin, sideY = -(point.x - pullPin.x) * pullSin + (point.y - pullPin.y) * pullCos;
+        var want = { x: pullPin.x + sideX * 1.6 * pullCos - sideY * pullSin, y: pullPin.y + sideX * 1.6 * pullSin + sideY * pullCos };
+        return Math.abs(pullInkAfter[index].x - want.x) < 1e-6 && Math.abs(pullInkAfter[index].y - want.y) < 1e-6;
+      }) && pulledPicture.x === pullPictureBefore.x && pulledPicture.y === pullPictureBefore.y && pulledPicture.width === pullPictureBefore.width
+        && pulledPicture.height === pullPictureBefore.height && app.drawing.rotationOf(pulledPicture) === pullPictureBefore.rotation;
+      var pulledFrame = canvas.selectionFrame();
+      checks.pullIsWrittenOnTheContainer = Math.abs(pulledFrame.width - pullFrame.width * 1.6) < 1e-6 && Math.abs(pulledFrame.height - pullFrame.height) < 1e-6;
+      canvas.undo();
+      // An undo hands back new records rather than the ones it took away, so every reading after it
+      // has to be taken again from the canvas: a reference kept from before the undo would go on
+      // describing an object the canvas no longer has, and the checks below it would read a stale one.
+      imageObject = app.state.objects.find(function (object) { return object.type === "image"; });
+      strokeObject = app.state.objects.find(function (object) { return object.type === "stroke" && object.tool === "pencil"; });
+      app.state.selectedIds = [strokeObject.id, imageObject.id]; app.state.selectedId = imageObject.id; canvas.render();
+      // The container exists only because these two happen to be selected. The moment the selection is
+      // not theirs the container is folded into its members and gone - an empty tap is the real path,
+      // since it is the selection that answers for the containers - and each member keeps exactly what
+      // it drew, which is why nothing on screen moves when it happens.
+      var releaseDrawnBefore = [imageObject, strokeObject].map(drawnCentre);
+      fire("down", .02, .98); fire("up", .02, .98);
+      var releasedPicture = app.state.objects.find(function (object) { return object.type === "image"; });
+      var releasedStroke = app.state.objects.find(function (object) { return object.type === "stroke" && object.tool === "pencil"; });
+      var releaseDrawnAfter = [releasedPicture, releasedStroke].map(drawnCentre);
+      checks.temporaryContainerReleased = app.state.selectedIds.length === 0 && containerCount() === 0 && !releasedPicture.groupId && !releasedStroke.groupId
+        && releaseDrawnAfter.every(function (centre, index) { return Math.abs(centre.x - releaseDrawnBefore[index].x) < 1e-6 && Math.abs(centre.y - releaseDrawnBefore[index].y) < 1e-6; });
+      // And the placement it was drawn through has gone onto the member, in the record an ordinary
+      // object has always had: the whole turn is the member's own angle now.
+      checks.releaseKeepsTheAngle = Math.abs(app.drawing.normalizeAngle(app.drawing.rotationOf(releasedPicture) - groupPictureAngle - Math.PI / 2)) < 1e-9
+        && Math.abs(app.drawing.normalizeAngle(app.drawing.rotationOf(releasedStroke) - Math.PI / 2)) < 1e-9;
+      // 成组 turns the container the selection is already in into a real group. The owner's requirement
+      // is that the turn of the selection is unchanged by it, so the box must come back exactly as it
+      // was - which means grouping must re-aim nothing and re-measure nothing.
+      app.state.selectedIds = [releasedStroke.id, releasedPicture.id]; app.state.selectedId = releasedPicture.id; canvas.render();
+      var formalFrameBefore = canvas.selectionFrame();
+      canvas.groupSelected();
+      var groupedPicture = app.state.objects.find(function (object) { return object.type === "image"; });
+      var groupedStroke = app.state.objects.find(function (object) { return object.type === "stroke" && object.tool === "pencil"; });
+      var groupedNode = containerOf(groupedPicture);
+      var formalFrameAfter = canvas.selectionFrame();
+      checks.groupIsFormal = Boolean(groupedNode) && groupedNode.formal === true && groupedStroke.groupId === groupedPicture.groupId;
+      checks.groupKeepsTransform = Math.abs(formalFrameAfter.angle - formalFrameBefore.angle) < 1e-12
+        && Math.abs(formalFrameAfter.width - formalFrameBefore.width) < 1e-12 && Math.abs(formalFrameAfter.height - formalFrameBefore.height) < 1e-12;
+      // Now they really are a group, so the two swap over: 成组 has nothing left to do and 解散 has.
+      await buttonsSettled();
+      checks.groupButtonsOnAGroup = canvas.canGroupSelected() === false && canvas.canUngroupSelected() === true
+        && groupButton.disabled === true && ungroupButton.disabled === false;
+      // Transforming the group transforms the group: the container's placement moves and the two
+      // children are not touched at all. That is the difference between a group and a pile of objects,
+      // and it is what the owner asked for by name.
+      var groupChildrenBefore = [JSON.stringify(groupedPicture), JSON.stringify(groupedStroke)];
+      canvas.scaleSelected(1.25);
+      var scaledPicture = app.state.objects.find(function (object) { return object.type === "image"; });
+      var scaledStroke = app.state.objects.find(function (object) { return object.type === "stroke" && object.tool === "pencil"; });
+      checks.groupScaleMovesContainerOnly = JSON.stringify(scaledPicture) === groupChildrenBefore[0] && JSON.stringify(scaledStroke) === groupChildrenBefore[1]
+        && Math.abs(app.drawing.placement.axesOf(containerOf(scaledPicture).m)[0] - 1.25) < 1e-9;
+      canvas.undo();
+      groupedPicture = app.state.objects.find(function (object) { return object.type === "image"; });
+      groupedStroke = app.state.objects.find(function (object) { return object.type === "stroke" && object.tool === "pencil"; });
+      app.state.selectedIds = [groupedStroke.id, groupedPicture.id]; app.state.selectedId = groupedPicture.id; canvas.render();
+      // A group that has been turned can still be carried, and carrying it carries the group. The
+      // owner reported the opposite of this: several objects turned and then moved, with the box left
+      // standing where it was and only the members wandering off inside it. The displacement has to go
+      // onto the container's own placement, on the *outside* - where a point of the drawing lands where
+      // the finger put it whatever the container has been turned to - and no member may be written to.
+      // Both the box and the ink are read, because either one alone can be right by accident.
+      function drawnCorners(object) { return app.drawing.placement.corners(app.drawing.placedMap(object), app.drawing.localBounds(object)); }
+      var carryFrameBefore = canvas.selectionFrame();
+      var carryNodeBefore = containerOf(groupedPicture).m.slice();
+      var carryChildrenBefore = [JSON.stringify(groupedPicture), JSON.stringify(groupedStroke)];
+      var carryDrawnBefore = [groupedPicture, groupedStroke].map(drawnCorners);
+      fire("down", carryFrameBefore.x / 768, carryFrameBefore.y / 768);
+      fire("move", (carryFrameBefore.x + 44) / 768, (carryFrameBefore.y + 58) / 768);
+      fire("up", (carryFrameBefore.x + 44) / 768, (carryFrameBefore.y + 58) / 768);
+      var carriedPicture = app.state.objects.find(function (object) { return object.type === "image"; });
+      var carriedStroke = app.state.objects.find(function (object) { return object.type === "stroke" && object.tool === "pencil"; });
+      var carryFrameAfter = canvas.selectionFrame(), carryNodeAfter = containerOf(carriedPicture).m;
+      var carryDrawnAfter = [carriedPicture, carriedStroke].map(drawnCorners);
+      checks.groupCarryMovesContainer = Math.abs(carryNodeAfter[4] - carryNodeBefore[4] - 44) < 1e-9 && Math.abs(carryNodeAfter[5] - carryNodeBefore[5] - 58) < 1e-9
+        && Math.abs(carryNodeAfter[0] - carryNodeBefore[0]) < 1e-9 && Math.abs(carryNodeAfter[3] - carryNodeBefore[3]) < 1e-9;
+      checks.groupCarryMovesBox = Math.abs(carryFrameAfter.x - carryFrameBefore.x - 44) < 1e-9 && Math.abs(carryFrameAfter.y - carryFrameBefore.y - 58) < 1e-9
+        && Math.abs(carryFrameAfter.angle - carryFrameBefore.angle) < 1e-12 && Math.abs(carryFrameAfter.width - carryFrameBefore.width) < 1e-12
+        && Math.abs(carryFrameAfter.height - carryFrameBefore.height) < 1e-12;
+      checks.groupCarryMovesInk = carryDrawnAfter.every(function (corners, index) {
+        return corners.every(function (point, which) {
+          return Math.abs(point.x - carryDrawnBefore[index][which].x - 44) < 1e-9 && Math.abs(point.y - carryDrawnBefore[index][which].y - 58) < 1e-9;
+        });
+      });
+      checks.groupCarryMovesNoChild = JSON.stringify(carriedPicture) === carryChildrenBefore[0] && JSON.stringify(carriedStroke) === carryChildrenBefore[1];
+      // Two fingers on that group scale it and carry it, and they do it through the container for the
+      // same reason. A pinch has one number to give and not two, so both of the container's axes must
+      // take the same one. Both fingers come down *inside* the box - that is what a pair is answered on
+      // - so the four points are aimed in the box's own frame, which on a turned box is not the screen's,
+      // and the point between them starts off the box's centre and ends somewhere else so that the scale
+      // and the carry are both asked for.
+      function inBox(localX, localY) {
+        var box = canvas.selectionFrame(), cos = Math.cos(box.angle), sin = Math.sin(box.angle);
+        return { x: box.x + localX * cos - localY * sin, y: box.y + localX * sin + localY * cos };
+      }
+      var pinchChildrenBefore = [JSON.stringify(carriedPicture), JSON.stringify(carriedStroke)];
+      var pinchFrameBefore = canvas.selectionFrame(), pinchNodeBefore = containerOf(carriedPicture).m.slice();
+      var pinchDrawnBefore = [carriedPicture, carriedStroke].map(drawnCorners);
+      var fingerA0 = inBox(-70, 15), fingerB0 = inBox(50, -35), fingerA1 = inBox(-130, 5), fingerB1 = inBox(110, -55);
+      var fingerFrom = { x: (fingerA0.x + fingerB0.x) / 2, y: (fingerA0.y + fingerB0.y) / 2 };
+      var fingerTo = { x: (fingerA1.x + fingerB1.x) / 2, y: (fingerA1.y + fingerB1.y) / 2 };
+      var fingerFactor = Math.sqrt(Math.pow(fingerB1.x - fingerA1.x, 2) + Math.pow(fingerB1.y - fingerA1.y, 2))
+        / Math.sqrt(Math.pow(fingerB0.x - fingerA0.x, 2) + Math.pow(fingerB0.y - fingerA0.y, 2));
+      fire("down", fingerA0.x / 768, fingerA0.y / 768, 1, true); fire("down", fingerB0.x / 768, fingerB0.y / 768, 2, false);
+      fire("move", fingerA1.x / 768, fingerA1.y / 768, 1, true); fire("move", fingerB1.x / 768, fingerB1.y / 768, 2, false);
+      fire("up", fingerA1.x / 768, fingerA1.y / 768, 1, true); fire("up", fingerB1.x / 768, fingerB1.y / 768, 2, false);
+      var pinchedPicture = app.state.objects.find(function (object) { return object.type === "image"; });
+      var pinchedStroke = app.state.objects.find(function (object) { return object.type === "stroke" && object.tool === "pencil"; });
+      var pinchFrameAfter = canvas.selectionFrame(), pinchNodeAfter = containerOf(pinchedPicture).m;
+      var pinchDrawnAfter = [pinchedPicture, pinchedStroke].map(drawnCorners);
+      checks.groupPinchScalesContainer = Math.abs(app.drawing.placement.axesOf(pinchNodeAfter)[0] - app.drawing.placement.axesOf(pinchNodeBefore)[0] * fingerFactor) < 1e-9
+        && Math.abs(pinchFrameAfter.width / pinchFrameBefore.width - fingerFactor) < 1e-9 && Math.abs(pinchFrameAfter.height / pinchFrameBefore.height - fingerFactor) < 1e-9;
+      checks.groupPinchOneFactor = Math.abs(app.drawing.placement.axesOf(pinchNodeAfter)[0] - app.drawing.placement.axesOf(pinchNodeAfter)[1]) < 1e-9
+        && Math.abs(pinchFrameAfter.angle - pinchFrameBefore.angle) < 1e-9;
+      checks.groupPinchMovesInk = pinchDrawnAfter.every(function (corners, index) {
+        return corners.every(function (point, which) {
+          var was = pinchDrawnBefore[index][which];
+          return Math.abs(point.x - (fingerTo.x + (was.x - fingerFrom.x) * fingerFactor)) < 1e-9
+            && Math.abs(point.y - (fingerTo.y + (was.y - fingerFrom.y) * fingerFactor)) < 1e-9;
+        });
+      });
+      checks.groupPinchMovesNoChild = JSON.stringify(pinchedPicture) === pinchChildrenBefore[0] && JSON.stringify(pinchedStroke) === pinchChildrenBefore[1];
+      // A group is a group again here, and every step above transformed it - so the two buttons have to
+      // read exactly as they did when it was made. That is the other half of the owner's rule: a
+      // transform must not reach these buttons, and a real group must hold them where they are. The box
+      // is compared with the one the group was made with, so this cannot be passing because nothing has
+      // happened in between.
+      var transformedFrame = canvas.selectionFrame();
+      await buttonsSettled();
+      checks.groupButtonsBlindToGroup = containerCount() === 1 && Boolean(containerOf(pinchedPicture)) && containerOf(pinchedPicture).formal === true
+        && Math.abs(transformedFrame.width - formalFrameBefore.width) > 1
+        && canvas.canGroupSelected() === false && canvas.canUngroupSelected() === true
+        && groupButton.disabled === true && ungroupButton.disabled === false;
+      // 解散 deletes the group itself and lets its members inherit it - it is not "the group's angle
+      // has gone" but "the group is gone" - so what is left is exactly what it looked like.
+      var dissolveDrawnBefore = [pinchedPicture, pinchedStroke].map(drawnCentre);
+      canvas.ungroupSelected();
+      var leftPicture = app.state.objects.find(function (object) { return object.type === "image"; });
+      var leftStroke = app.state.objects.find(function (object) { return object.type === "stroke" && object.tool === "pencil"; });
+      var dissolveDrawnAfter = [leftPicture, leftStroke].map(drawnCentre);
+      checks.ungroupDeletesGroup = containerCount() === 0 && !leftPicture.groupId && !leftStroke.groupId
+        && dissolveDrawnAfter.every(function (centre, index) { return Math.abs(centre.x - dissolveDrawnBefore[index].x) < 1e-6 && Math.abs(centre.y - dissolveDrawnBefore[index].y) < 1e-6; });
+      // 解散 hands the selection back as several things again, so the pair of buttons goes back to
+      // 成组 live and 解散 dead - the same reading the selection started with.
+      await buttonsSettled();
+      checks.groupButtonsAfterDissolve = canvas.canGroupSelected() === true && canvas.canUngroupSelected() === false
+        && groupButton.disabled === false && ungroupButton.disabled === true;
+      imageObject = leftPicture; strokeObject = leftStroke;
+      app.state.selectedIds = [strokeObject.id, imageObject.id]; app.state.selectedId = imageObject.id; canvas.render();
+      // The top bar must show the app's own icon rather than a letter standing in for it.
+      var brandImage = document.querySelector(".brand-mark img");
+      checks.brandIcon = Boolean(brandImage) && /app\/assets\/icon\.webp/.test(brandImage.getAttribute("src"));
       app.components.settings.openColor("selection");
       var selectionOpacity = document.querySelector('[name="colorOpacity"]'); selectionOpacity.value = "61"; document.querySelector("[data-save]").click();
       checks.selectionColorOpacity = strokeObject.opacity === 0.61 && imageObject.opacity === undefined;
@@ -278,7 +591,7 @@
       await new Promise(function (resolve, reject) { snapshotImage.onload = resolve; snapshotImage.onerror = reject; });
       var snapshotProbe = document.createElement("canvas"); snapshotProbe.width = 8; snapshotProbe.height = 8; var snapshotContext = snapshotProbe.getContext("2d"); snapshotContext.drawImage(snapshotImage, 0, 0, 8, 8);
       var snapshotPixel = snapshotContext.getImageData(4, 4, 1, 1).data;
-      checks.snapshotEditable = app.state.objects.length === snapshotCount + 1 && snapshotObject.type === "image" && snapshotObject.x === 0 && snapshotObject.y === 0 && snapshotObject.width === 768 && snapshotObject.height === 768 && app.state.selectedId === snapshotObject.id && app.state.tool === "select" && canvas.selectionHandles().length === 4;
+      checks.snapshotEditable = app.state.objects.length === snapshotCount + 1 && snapshotObject.type === "image" && snapshotObject.x === 0 && snapshotObject.y === 0 && snapshotObject.width === 768 && snapshotObject.height === 768 && app.state.selectedId === snapshotObject.id && app.state.tool === "select" && handleKeys() === "nw,ne,sw,se,rotate";
       checks.snapshotVisibleEffects = Math.max(snapshotPixel[0], snapshotPixel[1], snapshotPixel[2]) - Math.min(snapshotPixel[0], snapshotPixel[1], snapshotPixel[2]) < 5 && snapshotPixel[0] < 150;
       document.querySelector('[data-tool="brush"]').click();
       checks.directStrokeSliders = Boolean(document.getElementById("brush-size") && document.getElementById("stroke-opacity") && !document.getElementById("brush-more") && !document.getElementById("stroke-opacity-control").hidden);

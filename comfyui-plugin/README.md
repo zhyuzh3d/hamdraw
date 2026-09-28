@@ -1,23 +1,23 @@
-# CVP — ComfyUI HamDraw Plugin
+# CHP — ComfyUI HamDraw Plugin CHP
 
 HamDraw 的**统一本地接口**。任何客户端（HamDraw 本体、其他开发者的工具、只会发 curl 的脚本）只要认下面这一个 HTTP 契约，就能用你已经装好的 ComfyUI 出图，**不需要自己导出工作流 JSON** —— 四套图都内置在插件里。
 
-- 规范标识：`cvp/1`（响应体里的 `spec`）
-- 接口根路径：`/cvp`（**路径不版本化**，永久固定）
-- 契约文本：[`plans/cvp-spec.md`](../plans/cvp-spec.md)；落地计划：[`plans/cvp-plan.md`](../plans/cvp-plan.md)
-- 目录：把 `hamdraw_comfy/` 整个放进 ComfyUI 的 `custom_nodes/`
+- 规范标识：`chp/1`（响应体里的 `spec`）
+- 接口根路径：`/chp`（**路径不版本化**，永久固定）
+- 契约文本：[`plans/chp-spec.md`](../plans/chp-spec.md)；落地计划：[`plans/chp-plan.md`](../plans/chp-plan.md)
+- 目录：把 `hamdraw_chp/` 整个放进 ComfyUI 的 `custom_nodes/`
 
-**新客户端第一步先调 `GET /cvp/info`**（公开，不要密码）：它一次给出这台机器上**有哪些能力、每个能力收什么请求体、背后是哪几个模型文件、这条能力的编码器认不认中文、以及你带的密码对不对**。
+**新客户端第一步先调 `GET /chp/info`**（公开，不要密码）：它一次给出这台机器上**有哪些能力、每个能力收什么请求体、背后是哪几个模型文件、这条能力的编码器认不认中文、以及你带的密码对不对**。
 
 ## 安装
 
 1. 拷贝目录：
 
    ```bash
-   cp -r hamdraw_comfy  <你的 ComfyUI>/custom_nodes/hamdraw_comfy
+   cp -r hamdraw_chp  <你的 ComfyUI>/custom_nodes/hamdraw_chp
    ```
 
-   容器部署时把这个目录挂进去即可（宿主路径 → 容器 `custom_nodes/hamdraw_comfy`），改完重启 ComfyUI。
+   容器部署时把这个目录挂进去即可（宿主路径 → 容器 `custom_nodes/hamdraw_chp`），改完重启 ComfyUI。
 
 2. **没有额外依赖**，只用 ComfyUI 自带的 `aiohttp` / `folder_paths` / `execution`；也不用改 `requirements.txt`。
 
@@ -31,14 +31,14 @@ HamDraw 的**统一本地接口**。任何客户端（HamDraw 本体、其他开
 4. 想确认装好了：
 
    ```bash
-   curl -s http://127.0.0.1:8188/cvp/info
+   curl -s http://127.0.0.1:8188/chp/info
    ```
 
-   返回 JSON，且 `spec` 为 `cvp/1`、`plugin.version` 是你期望的那一版（当前 **2.3.0**）、每个能力的 `ready` 为 `true`，即成功。
+   返回 JSON，且 `spec` 为 `chp/1`、`plugin.version` 是你期望的那一版（当前 **2.4.0**）、每个能力的 `ready` 为 `true`，即成功。
 
    信息端点**密码填错也照答**（此时 `auth.authorized` 为 `false`），所以"地址对不对"和"密码对不对"可以一次问清：能返回 JSON 说明地址通，`authorized` 说明密码。
 
-   **插件版本只有一个出处**：`hamdraw_comfy/version.py` 的 `__version__`。发布包名（`tools/package-plugin.py`）与 App 内嵌副本（`tools/embed-plugin.py`）都读它，不会各自漂移。
+   **插件版本只有一个出处**：`hamdraw_chp/version.py` 的 `__version__`。发布包名（`tools/package-plugin.py`）与 App 内嵌副本（`tools/embed-plugin.py`）都读它，不会各自漂移。
 
 ## 配置（HamDraw 配置节点）
 
@@ -53,7 +53,7 @@ HamDraw 的**统一本地接口**。任何客户端（HamDraw 本体、其他开
 
 `render` 那一路要三个文件都填齐才算 `ready`；只填一半时信息接口会把它标成 `ready: false` 并在 `models[].missing` 里点名缺哪个槽位。
 
-配置写在 `custom_nodes/hamdraw_comfy/hamdraw_settings.json`（原子写、可手工编辑）；也可以直接用环境变量 `HAMDRAW_PASSWORD` 覆盖密码（适合容器/CI）。
+配置写在 `custom_nodes/hamdraw_chp/hamdraw_settings.json`（原子写、可手工编辑）；也可以直接用环境变量 `HAMDRAW_PASSWORD` 覆盖密码（适合容器/CI）。
 
 **部署调参（手工编辑设置文件）**：`families.qwen_image_21` 下三项。`cache_device` / `cache_dtype` 控制 Qwen 的 KV 缓存（默认 `auto` / `default`，即模型作者的建议值）；**显存吃紧的机器**改成 `cache_dtype: "int8"`。`reference_edge` 是**参考图的编码预算**（原生引擎管它叫 `reference_resolution`）：参考图先按**面积**缩到"约 edge² 像素"再进编码器（`ImageScaleToTotalPixels`，**保持原图自己的比例**, 对齐到 32），默认 `1024`（核心节点自己的默认值），想省算力可以写小；**它不影响出图画幅**。参考图的**比例永远保留**：画幅由采样 latent 决定，参考图只说"长什么样" —— 按硬目标框去缩会把定妆照拉变形。插件不会替某台机器做这些假设 —— 环境变量 `HAMDRAW_TRANSLATE_URL` / `HAMDRAW_TRANSLATE_MODEL` / `HAMDRAW_TRANSLATE_DISABLED` 同理。
 
@@ -96,7 +96,7 @@ HamDraw 的**统一本地接口**。任何客户端（HamDraw 本体、其他开
                                                     └失败→ 用原文建图(任务不失败)
 ```
 
-- 客户端**可以**先调 `POST /cvp/translate` 把译文显示给用户，也可以什么都不做 —— 什么都不做也不会把中文喂进只认英文的编码器。
+- 客户端**可以**先调 `POST /chp/translate` 把译文显示给用户，也可以什么都不做 —— 什么都不做也不会把中文喂进只认英文的编码器。
 - **判据是"是不是全 ASCII"**，不是"有没有中文"：CLIP-L 对西里尔/希腊字母一样两眼一抹黑，只看中日韩会让它们原样过去变成噪声。
 - 记忆库落盘在插件目录的 `hamdraw_translations.json`，重装、重启都不丢。**键 = 原文 + 目标语言**：一条翻译是语言事实，与哪个引擎翻的无关；引擎与提示词版本作为旁注记下来（将来换更好的引擎重刷时按它筛），不进键。
 - 后端只要求 **OpenAI 兼容的 `POST {url}/v1/chat/completions`**（llama.cpp / vLLM / Ollama / 各家云 API 都行）。**默认地址是空的，也就是关闭** —— 插件不替任何部署写死一个地址。
@@ -114,13 +114,13 @@ HamDraw 的**统一本地接口**。任何客户端（HamDraw 本体、其他开
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
-| `GET` | `/cvp/info` | **公开** | 信息文档：能力清单 + 共享请求 schema + 每个能力的模型槽位与就绪状态 + 翻译可用性。密码错了也照答，由 `auth.authorized` 说明 |
-| `POST` | `/cvp/jobs` | Bearer | 提交作业 → **202** `{"job": {…}}` |
-| `GET` | `/cvp/jobs/{id}` | Bearer | 状态 + 提示词 + `outputs`（较重，完成后再调） |
-| `GET` | `/cvp/jobs/{id}/progress` | Bearer | **高频轮询用**：只回 `{id, state, queue_position, progress}`，不解析结果 |
-| `GET` | `/cvp/jobs/{id}/output/{n}` | Bearer | 取成图（直接返回 PNG） |
-| `POST` | `/cvp/jobs/{id}/cancel` | Bearer | 取消排队中的作业 |
-| `POST` | `/cvp/translate` | Bearer | 提前翻译（可选，用于把译文显示给用户） |
+| `GET` | `/chp/info` | **公开** | 信息文档：能力清单 + 共享请求 schema + 每个能力的模型槽位与就绪状态 + 翻译可用性。密码错了也照答，由 `auth.authorized` 说明 |
+| `POST` | `/chp/jobs` | Bearer | 提交作业 → **202** `{"job": {…}}` |
+| `GET` | `/chp/jobs/{id}` | Bearer | 状态 + 提示词 + `outputs`（较重，完成后再调） |
+| `GET` | `/chp/jobs/{id}/progress` | Bearer | **高频轮询用**：只回 `{id, state, queue_position, progress}`，不解析结果 |
+| `GET` | `/chp/jobs/{id}/output/{n}` | Bearer | 取成图（直接返回 PNG） |
+| `POST` | `/chp/jobs/{id}/cancel` | Bearer | 取消排队中的作业 |
+| `POST` | `/chp/translate` | Bearer | 提前翻译（可选，用于把译文显示给用户） |
 
 **`progress` 允许为 `null`，而且经常就是 `null`。** 编一个假百分比比给 `null` 更糟；`queue_position`（前面还有几个作业，自己在跑时为 0）是任何实现都算得出来的可靠数字，客户端用不确定态 + 队列位置就够了。
 
@@ -146,17 +146,33 @@ HamDraw 的**统一本地接口**。任何客户端（HamDraw 本体、其他开
 - **两条统一规则**：`steps` 是枚举，越界 → `400 unsupported_steps`；画幅按能力的 `size` 域判（对齐步长 + 边长/像素上下界），越界 → `400 unsupported_size`，**域内的任何画幅都收，不只是 `values.size` 里那几个**；连续量（`ref_strength`）越界 → 夹到边界并在 `job` 回显。
 - 鉴权：`Authorization: Bearer <password>`（也接受 Basic 或 `X-HamDraw-Password`）。密码为空时不需要。
 - 能力若在 `ignores` 里声明了某字段（如 `render` 的 `negative_prompt`），**不要发**；发了也会被忽略，并在 `job.ignored` 里回显，好让客户端提示用户而不是让人以为参数生效了。
-- 完成后的 `outputs[n].url` 已经是 `/cvp/jobs/...` 绝对路径，**客户端直接拼服务器地址去下就行，不要再拼一层**。
+- 完成后的 `outputs[n].url` 已经是 `/chp/jobs/...` 绝对路径，**客户端直接拼服务器地址去下就行，不要再拼一层**。
 
 `job` 对象里三个字段回答"提示词到底发生了什么"：`prompt_source` 是客户端给的原文、`prompt` 是实际送进模型的那份、`translated` 表示两者是否不同。
 
-错误码：`unauthorized(401)` / `bad_request` / `unsupported_capability` / `unsupported_size` / `unsupported_steps` / `bad_image` / `bad_mask` / `no_model(409)` / `invalid_workflow` / `busy(429)` / `not_found(404)` / `internal(500)`，全部带可读中文文案。
+错误码：`unauthorized(401)` / `bad_request` / `unsupported_capability` / `unsupported_size` / `unsupported_steps` / `bad_image` / `bad_mask` / `no_model(409)` / `invalid_workflow` / `busy(429)` / `not_found(404)` / `internal(500)`，全部带可读中文文案。另有一个 `unsupported_task` 只留给老客户端（它只会发 `task`，也只认得这个码）。
 
-### 旧路径（兼容，别再用）
+### `/cvp` 是别名，`/hamdraw/v1` 已经不存在
 
-已发出的客户端（含 PoseGi）读的是 `/hamdraw/v1/plugins` 与 `/hamdraw/v1/capabilities`。这些路径**继续返回旧的文档形状**（由同一张能力表投影生成），`/hamdraw/v1/jobs*` 与 `/cvp/jobs*` 是**同一批处理函数**，请求侧 `task` / `capability` 都认。旧路由仍用旧错误码 `unsupported_task`，并继续给 `job.progress` 一个估算百分比（新路径给 `null`）。
+插件 2.3.0 之前叫 CVP，主根是 `/cvp`。改名成 CHP 之后主根是 `/chp`，而 **`/cvp` 作为别名保留**：同一批处理函数、同一份文档、同一个答案，只是根名不同 —— 一个已经发出去的客户端 build 照原样调 `/cvp/*` 仍然能用，不用等它更新。
 
-这些兼容层是**临时的**，集中在 `hamdraw_comfy/legacy.py` 一个文件里；等 PoseGi 改读 `/cvp/info` 之后整份删除。
+- `job.outputs[].url` 跟着**实际进来的那个根**走：从 `/cvp` 来的请求，成图 URL 也是 `/cvp/jobs/…`，客户端不会拿到一个它没申请过的路径。
+- 别名只为过渡存在。等没有在跑的 build 还在调 `/cvp` 了，把它从 `capabilities.ALIAS_ROOTS` 里去掉即可 —— 删一个常量，其它一行不用动。
+- **`/hamdraw/v1` 那套旧投影面已经整块删除**（连同 `legacy.py`、`job.progress` 的估算百分比、两套文档形状）。它当时唯一的消费者是 PoseGi，而 PoseGi 已改为直接读 `/chp/info`。一套投影面意味着每条能力要维护两种形状，这笔账只有在有客户真的需要时才划算。
+
+### 从 2.3.0（CVP）升级：先搬设置，再删旧目录
+
+包名从 `hamdraw_comfy` 改成了 `hamdraw_chp`，所以解压后 `custom_nodes/` 下会**多出一个目录**。两个包都会注册 `/cvp`，同时存在会让 ComfyUI 因路由重复注册而在启动阶段报错。
+
+**配置（访问密码、模型槽位）就存在插件目录里的 `hamdraw_settings.json`**，删旧目录会把它一起删掉，所以顺序是「先搬后删」：
+
+```bash
+cd custom_nodes
+cp hamdraw_comfy/hamdraw_settings.json hamdraw_chp/   # 搬设置（文件名两个版本一致）
+rm -rf hamdraw_comfy                                  # 再删旧包
+```
+
+文件名与 `HAMDRAW_SETTINGS` 环境变量**故意没有跟着改名**，就是为了这一步能原样搬过去。设置文件里同样刻意保留的还有几处 schema 字符串（`hamdraw-comfy/v2`、`hamdraw-comfy/discovery/v1`、`hamdraw-comfy-settings/v1`）—— 它们是盘上数据的格式标识，不是产品名，改名只会让老文件读不出来。
 
 ## 自测
 
@@ -165,23 +181,23 @@ HamDraw 的**统一本地接口**。任何客户端（HamDraw 本体、其他开
 python3 tests/test_spec.py
 
 # 1. 信息接口：有哪些能力、各自收什么、谁只认英文、模型就绪没
-curl -s http://<host>:8188/cvp/info
+curl -s http://<host>:8188/chp/info
 
 # 2. 提交 + 轮询 + 取图
-curl -s -X POST http://<host>:8188/cvp/jobs \
+curl -s -X POST http://<host>:8188/chp/jobs \
   -H 'Authorization: Bearer <password>' -H 'Content-Type: application/json' \
   -d '{"capability":"quick","prompt":"a red fox","seed":1,"size":[512,512],"steps":8,"ref_strength":0.55}'
 
-curl -s -H 'Authorization: Bearer <password>' http://<host>:8188/cvp/jobs/<id>/progress
-curl -s -H 'Authorization: Bearer <password>' -o out.png http://<host>:8188/cvp/jobs/<id>/output/0
+curl -s -H 'Authorization: Bearer <password>' http://<host>:8188/chp/jobs/<id>/progress
+curl -s -H 'Authorization: Bearer <password>' -o out.png http://<host>:8188/chp/jobs/<id>/output/0
 
 # 3. 中文提示词（quick 只认英文，插件会自动译英，响应里 translated: true）
-curl -s -X POST http://<host>:8188/cvp/jobs \
+curl -s -X POST http://<host>:8188/chp/jobs \
   -H 'Authorization: Bearer <password>' -H 'Content-Type: application/json' \
   -d '{"capability":"quick","prompt":"一只红色的狐狸","image_base64":"data:image/png;base64,..."}'
 ```
 
-用 `python3 -m json.tool` 过一遍第 1 步的返回，重点确认三件事：`spec` 是 `cvp/1`、`capabilities` 有你预期的四条且 `ready` 为 `true`、`input_schemas` 只有一份。
+用 `python3 -m json.tool` 过一遍第 1 步的返回，重点确认三件事：`spec` 是 `chp/1`、`capabilities` 有你预期的四条且 `ready` 为 `true`、`input_schemas` 只有一份。
 
 - **第一次请求会慢**（模型加载，约十几秒），之后同模型重跑约 1 秒；别用首单判断"模型太慢"。
-- 在 HamDraw App 里对接：设置 → 模型配置 → 接口模式选「CVP 插件（推荐）」，服务器地址填 `http://<host>:<port>`，访问密码填节点里设的那个。
+- 在 HamDraw App 里对接：设置 → 模型配置 → 接口模式选「CHP 插件（推荐）」，服务器地址填 `http://<host>:<port>`，访问密码填节点里设的那个。

@@ -1,8 +1,13 @@
-# CVP 规范 v1
+# CHP 规范 v1
 
-CVP 是一套**图像能力接口规范**, 面向"把画布交给后端重画"这一类客户端。它规定的是**输入输出格式**, 不规定后端用什么模型、什么节点、什么采样器。
+> **2026-09-28 更名**: 本规范原名 **CVP**（`cvp/1`、根 `/cvp`），现更名为 **CHP**
+> （`chp/1`、根 `/chp`）。**规范内容一字未改** —— 只改了名字、`spec` 标识与根路径。
+> `spec` 大版本仍是 **v1**，对外字段、错误码、能力语义全部保持第 0 节第 3 条「只加不删」的约束。
+> `/cvp` 作为**别名根**继续提供与 `/chp` 完全相同的文档（见 `README.md`）。
 
-当前唯一实现是 `comfyui-plugin/hamdraw_comfy`(ComfyUI 自定义节点), 它同时是**样板实现**: 里面绑定的模型名、采样参数、节点图都是针对特定模型的建议, 可以被替换而**不改变本规范**。
+CHP 是一套**图像能力接口规范**, 面向"把画布交给后端重画"这一类客户端。它规定的是**输入输出格式**, 不规定后端用什么模型、什么节点、什么采样器。
+
+当前唯一实现是 `comfyui-plugin/hamdraw_chp`(ComfyUI 自定义节点), 它同时是**样板实现**: 里面绑定的模型名、采样参数、节点图都是针对特定模型的建议, 可以被替换而**不改变本规范**。
 
 ---
 
@@ -18,31 +23,31 @@ CVP 是一套**图像能力接口规范**, 面向"把画布交给后端重画"�
 
 | 类别 | 路径 | 鉴权 | 用途 |
 |---|---|---|---|
-| **信息** | `GET /cvp/info` | **公开** | 客户端开机第一件事: 这台后端有什么能力 |
-| **生成** | `/cvp/jobs…` | Bearer | 提交作业、取结果、取消 |
-| **进度** | `GET /cvp/jobs/{id}/progress` | Bearer | 高频轮询的轻量接口 |
+| **信息** | `GET /chp/info` | **公开** | 客户端开机第一件事: 这台后端有什么能力 |
+| **生成** | `/chp/jobs…` | Bearer | 提交作业、取结果、取消 |
+| **进度** | `GET /chp/jobs/{id}/progress` | Bearer | 高频轮询的轻量接口 |
 
 分三类的目的: 客户端**先拿到能力列表再干活**; 高频轮询不碰结果解析; 信息接口可以自由被探测而不需要先配好密码。
 
-### 1.1 信息接口 `GET /cvp/info`
+### 1.1 信息接口 `GET /chp/info`
 
 **公开(不校验密码)**。密码错了也照常返回, 由 `auth.authorized` 说明。
 
 ```json
 {
-  "spec": "cvp/1",
-  "plugin": { "id": "hamdraw_comfy", "version": "2.2.0",
+  "spec": "chp/1",
+  "plugin": { "id": "hamdraw_chp", "version": "2.2.0",
               "label": { "zh": "ComfyUI HamDraw 插件", "en": "ComfyUI HamDraw Plugin" } },
   "auth": { "required": true, "authorized": false, "scheme": "Bearer",
             "header": "Authorization", "hint": "密码在 ComfyUI 的 HamDraw 配置节点里设置。" },
   "endpoints": {
-    "info":     "/cvp/info",
-    "jobs":     "/cvp/jobs",
-    "job":      "/cvp/jobs/{job_id}",
-    "progress": "/cvp/jobs/{job_id}/progress",
-    "output":   "/cvp/jobs/{job_id}/output/{index}",
-    "cancel":   "/cvp/jobs/{job_id}/cancel",
-    "translate":"/cvp/translate"
+    "info":     "/chp/info",
+    "jobs":     "/chp/jobs",
+    "job":      "/chp/jobs/{job_id}",
+    "progress": "/chp/jobs/{job_id}/progress",
+    "output":   "/chp/jobs/{job_id}/output/{index}",
+    "cancel":   "/chp/jobs/{job_id}/cancel",
+    "translate":"/chp/translate"
   },
   "input_schemas": { "txt-ref2img/v1": { "…": "见第 4 节" } },
   "capabilities": [ { "…": "见第 3 节" } ],
@@ -59,14 +64,14 @@ CVP 是一套**图像能力接口规范**, 面向"把画布交给后端重画"�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `POST` | `/cvp/jobs` | 提交 → `202` `{"job": {…}}` |
-| `GET` | `/cvp/jobs/{id}` | 状态 + 结果 (较重, 完成后再调) |
-| `GET` | `/cvp/jobs/{id}/output/{index}` | 取图, `image/png` 直出 |
-| `POST` | `/cvp/jobs/{id}/cancel` | 取消排队中的作业 |
+| `POST` | `/chp/jobs` | 提交 → `202` `{"job": {…}}` |
+| `GET` | `/chp/jobs/{id}` | 状态 + 结果 (较重, 完成后再调) |
+| `GET` | `/chp/jobs/{id}/output/{index}` | 取图, `image/png` 直出 |
+| `POST` | `/chp/jobs/{id}/cancel` | 取消排队中的作业 |
 
 提交体的字段定义见第 4 节。`202` 返回完整 `job` 对象(结构见 1.4)。
 
-### 1.3 进度接口 `GET /cvp/jobs/{id}/progress`
+### 1.3 进度接口 `GET /chp/jobs/{id}/progress`
 
 高频轮询用, 只返回三个字段, 不做结果解析:
 
@@ -94,7 +99,7 @@ CVP 是一套**图像能力接口规范**, 面向"把画布交给后端重画"�
   "translated": true,
   "ignored": ["negative_prompt"],
   "outputs": [
-    { "index": 0, "url": "/cvp/jobs/8f3c…/output/0",
+    { "index": 0, "url": "/chp/jobs/8f3c…/output/0",
       "media_type": "image/png", "filename": "hamdraw_00001_.png",
       "subfolder": "hamdraw/quick", "type": "output" }
   ],
@@ -273,7 +278,7 @@ CVP 是一套**图像能力接口规范**, 面向"把画布交给后端重画"�
 - 失败不入库。上限可配, 超出按最旧淘汰。
 - 记忆库存在**后端**而不是客户端, 意义在于: 任何客户端(包括只会发 curl 的第三方工具)都自动共享同一份成果。
 
-### 5.4 `POST /cvp/translate`
+### 5.4 `POST /chp/translate`
 
 给"想提前预热"或"想给用户看译文"的客户端用, 不是必需步骤。
 

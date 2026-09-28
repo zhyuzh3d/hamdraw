@@ -6,7 +6,7 @@
   var SLOT_INTRO = {
     quick: ["请使用 1 秒以内成图 512 分辨率的模型，推荐 LCM 模型。", "Use a model that finishes a 512 image within about a second. An LCM model is recommended."],
     inpaint: ["用蒙版标出要改的地方，只重画这一块，其余保持原样；同样推荐 LCM 模型。", "Mark the area to change. Only that area is repainted and everything else is kept. An LCM model is recommended."],
-    upscale: ["把 512 的手绘稿放大并补充细节。模型只要能接受 512 参考图、输出大图即可。", "Upscale the 512 sketch and add detail. Any model that accepts a 512 reference and outputs a larger image works."]
+    upscale: ["用高质量模型把当前画面重画成 1024 以内的成品图，尽量保住构图。比速写模型重得多，单张要几十秒。", "Repaint the current picture into a finished image up to 1024 px with the high-quality model, keeping the composition. Far heavier than a sketch model; each one takes tens of seconds."]
   };
   function init() { ui = app.components.ui; }
   function input(name, label, value, type, placeholder) {
@@ -85,18 +85,18 @@
     ui = app.components.ui;
     if (kind === "models") {
       draft = u.copy(app.config);
-      // The ComfyUI plugin travels with this app, so a CVP task whose address nobody
+      // The ComfyUI plugin travels with this app, so a CHP task whose address nobody
       // ever chose — blank, or an example an earlier version offered — starts from
       // the plugin's own address instead of an empty box. Filling it before the
       // snapshot below is what keeps opening the sheet from looking like an unsaved
       // edit, and it is a real value, so the test button works before anything is
       // saved.
-      var cvpUsed = SLOTS.some(function (name) { return draft[name] && draft[name].protocol === "cvp"; });
-      if (cvpUsed) {
+      var chpUsed = SLOTS.some(function (name) { return draft[name] && draft[name].protocol === "chp"; });
+      if (chpUsed) {
         var connection = draft.connection || (draft.connection = { endpoint: "", apiKey: "", customHeaders: "" });
         connection.endpoint = app.services.providers.resolveEndpoint(connection.endpoint);
         SLOTS.forEach(function (name) {
-          if (draft[name] && draft[name].protocol === "cvp") draft[name].endpoint = connection.endpoint;
+          if (draft[name] && draft[name].protocol === "chp") draft[name].endpoint = connection.endpoint;
         });
       }
       original = JSON.stringify(draft); slot = "quick"; renderModels();
@@ -107,24 +107,21 @@
     else about();
   }
   function aspectField(model, name) {
-    // The aspect and step count come from the plugin's capability specification,
-    // so they are shown but never edited here. Only the upscale capability lets
-    // the user pick between its output sizes, and which those are is the
-    // plugin's answer, not this file's: the last /cvp/info is asked first and
-    // the familiar pair is only the fallback for a plugin never yet contacted.
-    var known = name === "upscale" ? app.services.providers.capabilitySizes(name) : [];
-    var choices = known.length ? known : (name === "upscale" ? [[1024, 1024], [2048, 2048]] : []);
-    var sizes = name === "upscale"
-      ? '<span class="aspect-sizes">' + choices.map(function (pair) {
-        var picked = Number(model.width) === pair[0] && Number(model.height) === pair[1];
-        return '<button type="button" data-aspect-width="' + pair[0] + '" data-aspect-height="' + pair[1] + '" class="' + (picked ? "is-active" : "") + '">' + pair[0] + " × " + pair[1] + '</button>';
-      }).join("") + '</span>'
-      : '<strong>' + model.width + " × " + model.height + '</strong>';
-    return '<div class="field locked-field aspect-field"><span>' + t("输入与画幅", "Input & aspect") + '</span><div class="aspect-value"><strong>' + app.services.providers.aspect(model.width, model.height) + '</strong>' + sizes + '<strong>' + t("步数 ", "steps ") + model.steps + '</strong></div></div>';
+    // The canvas and the step count belong to the capability, so they are printed
+    // and never offered. There used to be a pair of canvas buttons on the render
+    // slot; they are gone with the rest of the per-task numbers, because the
+    // workflow is built around the canvas the plugin publishes — an alternative
+    // could only come back as unsupported_size — and because a task whose shape
+    // is the plugin's business should not look like a choice the user owns.
+    //
+    // The pair is printed straight from what the request will carry, so the row
+    // can never advertise a shape the job does not submit. Mirroring one edge
+    // would turn a portrait canvas into a square.
+    return '<div class="field locked-field aspect-field"><span>' + t("输入与画幅", "Input & aspect") + '</span><div class="aspect-value"><strong>' + app.services.providers.aspect(model.width, model.height) + '</strong><strong>' + model.width + " × " + model.height + '</strong><strong>' + t("步数 ", "steps ") + model.steps + '</strong></div></div>';
   }
   function renderModels() {
-    var model = draft[slot] || draft.quick, protocol = model.protocol, cvp = protocol === "cvp";
-    // The three CVP capabilities share one address, password and header set, so the
+    var model = draft[slot] || draft.quick, protocol = model.protocol, chp = protocol === "chp";
+    // The three CHP capabilities share one address, password and header set, so the
     // form reads and writes that single object instead of this task's own copy.
     // Switching capabilities therefore shows the same connection, and the store
     // re-derives each one from it when the settings are saved.
@@ -133,48 +130,43 @@
     var tabs = SLOT_TABS.map(function (entry) {
       return '<button data-slot-tab="' + entry[0] + '" class="' + (slot === entry[0] ? "is-active" : "") + '">' + t(entry[1], entry[2]) + '</button>';
     }).join("");
-    var secretLabel = cvp ? t("访问密码", "Access password") : "API Key";
-    var secretHint = cvp
+    var secretLabel = chp ? t("访问密码", "Access password") : "API Key";
+    var secretHint = chp
       ? t("在 ComfyUI 的 HamDraw 配置节点里设置；留空表示插件没有启用密码", "Set it in the ComfyUI HamDraw config node; leave empty when the plugin has no password")
       : t("免鉴权的本地服务可留空", "Optional for local services");
-    var secretField = '<label class="field"><span>' + secretLabel + '</span><div class="secret-input"><input name="apiKey" type="password" autocomplete="off" value="' + u.escapeHtml(cvp ? shared.apiKey : model.apiKey) + '" placeholder="' + u.escapeHtml(secretHint) + '"><button data-toggle-secret aria-label="' + t("显示密钥", "Show key") + '"><i class="fa-regular fa-eye"></i></button><button data-paste-secret aria-label="' + t("粘贴密钥", "Paste key") + '"><i class="fa-regular fa-paste"></i></button></div></label>';
-    var sharedHelp = '<p class="field-help">' + t("三个任务的 CVP 地址与密码是同一套：在这里改，三个任务一起改。", "The three tasks share one CVP address and password: change it here and all three change together.") + '</p>';
+    var secretField = '<label class="field"><span>' + secretLabel + '</span><div class="secret-input"><input name="apiKey" type="password" autocomplete="off" value="' + u.escapeHtml(chp ? shared.apiKey : model.apiKey) + '" placeholder="' + u.escapeHtml(secretHint) + '"><button data-toggle-secret aria-label="' + t("显示密钥", "Show key") + '"><i class="fa-regular fa-eye"></i></button><button data-paste-secret aria-label="' + t("粘贴密钥", "Paste key") + '"><i class="fa-regular fa-paste"></i></button></div></label>';
+    var sharedHelp = '<p class="field-help">' + t("三个任务的 CHP 地址与密码是同一套：在这里改，三个任务一起改。", "The three tasks share one CHP address and password: change it here and all three change together.") + '</p>';
     var card = '<div data-model-card="' + slot + '"><p class="model-intro">' + t(SLOT_INTRO[slot][0], SLOT_INTRO[slot][1]) + '</p>' +
         select("protocol", t("接口模式", "API format"), protocol, choices) +
         aspectField(model, slot) +
-        input("endpoint", t("服务器地址", "Server address"), cvp ? shared.endpoint : model.endpoint, "url", cvp ? app.services.providers.exampleEndpoint : "https://…") +
+        input("endpoint", t("服务器地址", "Server address"), chp ? shared.endpoint : model.endpoint, "url", chp ? app.services.providers.exampleEndpoint : "https://…") +
         secretField +
-        (cvp ? sharedHelp : '') +
-        (!cvp ? input("model", t("模型 ID", "Model ID"), model.model, "text", t("填写服务提供的模型名称", "Model name from your provider")) : '') +
-        (cvp ? '<p class="field-help">' + t("画幅、步数和参考图权重由插件内置的工作流决定；点下方按钮可以直接读取插件当前的模型与能力。中文提示词由插件负责译成英文。", "Aspect, steps and reference weight come from the plugin's built-in workflows. The button below reads the plugin's current models and capabilities. The plugin translates a Chinese prompt itself.") + '</p>' : '') +
-        '<details class="advanced"><summary>' + t("高级参数", "Advanced options") + '</summary><div class="field-row">' + input("timeoutMs", t("超时（毫秒）", "Timeout (ms)"), model.timeoutMs, "number") + (cvp ? input("refStrength", t("参考图权重基准", "Reference weight"), model.refStrength, "number") : '') + '</div>' +
-        (cvp ? '<div class="field-row">' + input("growMaskBy", t("蒙版外扩（像素）", "Mask grow (px)"), model.growMaskBy, "number") + '</div>' : '') +
+        (chp ? sharedHelp : '') +
+        (!chp ? input("model", t("模型 ID", "Model ID"), model.model, "text", t("填写服务提供的模型名称", "Model name from your provider")) : '') +
+        (chp ? '<p class="field-help">' + t("画幅、步数和参考图权重由插件内置的工作流决定；点下方按钮可以直接读取插件当前的模型与能力。中文提示词由插件负责译成英文。", "Aspect, steps and reference weight come from the plugin's built-in workflows. The button below reads the plugin's current models and capabilities. The plugin translates a Chinese prompt itself.") + '</p>' : '') +
+        // A CHP task exposes the connection and nothing else: the canvas, the step
+        // count, the reference weight and the mask grow all belong to the plugin's
+        // built-in workflows, and the paragraph above already says so. Offering a
+        // field for one of them made that paragraph read as a lie, and moving it
+        // could only push the job outside what the workflow was built around.
+        '<details class="advanced"><summary>' + t("高级参数", "Advanced options") + '</summary><div class="field-row">' + input("timeoutMs", t("超时（毫秒）", "Timeout (ms)"), model.timeoutMs, "number") + '</div>' +
         (protocol === "openai-images" ? select("quality", t("生成质量", "Quality"), model.quality, [["low", t("快速", "Low")], ["medium", t("均衡", "Medium")], ["high", t("精细", "High")], ["auto", t("自动", "Auto")]]) : '') +
-        textarea("customHeaders", t("自定义请求头 JSON", "Custom headers JSON"), cvp ? shared.customHeaders : model.customHeaders, '{"X-API-Key":"…"}') + '</details>' +
+        textarea("customHeaders", t("自定义请求头 JSON", "Custom headers JSON"), chp ? shared.customHeaders : model.customHeaders, '{"X-API-Key":"…"}') + '</details>' +
         '<p class="field-help">' + t("只向你配置的服务发送画面。局域网支持 HTTP；访问密码仅在保存后保存在当前应用。", "Images go only to your configured service. LAN HTTP is supported. Passwords are stored locally when you save.") + '</p>' +
         '<button class="button button-secondary" data-test><i class="fa-solid fa-plug"></i>' + t("测试连接", "Test connection") + '</button><p class="connection-status" data-test-status></p>' +
-        (cvp ? '<button class="button button-secondary" data-plugin-download><i class="fa-solid fa-download"></i>' + t("下载 ComfyUI 插件", "Download ComfyUI plugin") + '</button>' +
+        (chp ? '<button class="button button-secondary" data-plugin-download><i class="fa-solid fa-download"></i>' + t("下载 ComfyUI 插件", "Download ComfyUI plugin") + '</button>' +
           '<p class="field-help">' + t("插件包随本应用一起提供。解压到 ComfyUI 的 custom_nodes 目录后重启 ComfyUI，再在 HamDraw 配置节点里填同样的密码。", "The plugin package ships with this app. Unzip it into ComfyUI's custom_nodes directory, restart ComfyUI, then set the same password in the HamDraw config node.") + '</p>' : '') + '</div>';
     var root = ui.open({ title: t("模型配置", "Models"), beforeClose: discard, html:
       '<div class="segmented model-tabs">' + tabs + '</div>' + card + footer() });
     bindChoices(root);
     root.querySelectorAll("[data-slot-tab]").forEach(function (button) { button.onclick = function () { slot = button.dataset.slotTab; renderModels(); }; });
-    root.querySelectorAll("[data-aspect-width]").forEach(function (button) {
-      button.onclick = function () {
-        // Both numbers come from the button: mirroring one of them would turn a
-        // portrait canvas the plugin offered back into a square.
-        draft[slot].width = Number(button.dataset.aspectWidth);
-        draft[slot].height = Number(button.dataset.aspectHeight);
-        renderModels();
-      };
-    });
     root.querySelectorAll("[name]").forEach(function (field) {
       var numeric = ["width", "height", "steps", "timeoutMs", "refStrength", "growMaskBy"].indexOf(field.name) >= 0;
-      // These three are the shared CVP connection, so they are written to the one
+      // These three are the shared CHP connection, so they are written to the one
       // object as well as to this capability's copy (the copy keeps the test
       // button and the request path reading real values before the settings are
       // saved).
-      var sharedField = cvp && ["endpoint", "apiKey", "customHeaders"].indexOf(field.name) >= 0;
+      var sharedField = chp && ["endpoint", "apiKey", "customHeaders"].indexOf(field.name) >= 0;
       function update() {
         var value = field.name === "apiKey" || field.name === "customHeaders" ? field.value : numeric ? Number(field.value) : field.value;
         if (sharedField) shared[field.name] = value;
@@ -183,13 +175,13 @@
       if (field.name === "protocol") field.onchange = async function () {
         var previous = model.protocol, protocol = field.value;
         if (model.endpoint || model.apiKey) {
-          var confirmed = await ui.confirm({ title: t("切换接口模式？", "Change API format?"), message: t("这个任务会改用该接口默认的地址与密码；CVP 的公共连接设置会留给其他任务。", "This task falls back to that format's own address and password. The shared CVP connection stays for the other tasks."), ok: t("切换", "Change") });
+          var confirmed = await ui.confirm({ title: t("切换接口模式？", "Change API format?"), message: t("这个任务会改用该接口默认的地址与密码；CHP 的公共连接设置会留给其他任务。", "This task falls back to that format's own address and password. The shared CHP connection stays for the other tasks."), ok: t("切换", "Change") });
           if (!confirmed) { field.value = previous; syncChoice(field); return; }
         }
         var next = app.services.providers.preset(protocol, slot);
-        // Choosing CVP adopts the shared connection; when nothing is configured yet the
+        // Choosing CHP adopts the shared connection; when nothing is configured yet the
         // preset's example address becomes that connection instead of being dropped.
-        if (protocol === "cvp" && !String(shared.endpoint || "").trim() && !String(shared.apiKey || "").trim()) {
+        if (protocol === "chp" && !String(shared.endpoint || "").trim() && !String(shared.apiKey || "").trim()) {
           shared.endpoint = next.endpoint; shared.apiKey = next.apiKey || ""; shared.customHeaders = next.customHeaders || "";
         }
         draft[slot] = next; renderModels();
@@ -225,7 +217,11 @@
           status.textContent = t("连接成功：", "Connected: ") + label + (files ? " · " + files : "") + "。" + language;
         } else status.textContent = t("连接成功；出图能力取决于所选模型。", "Connected. Image support depends on the selected model.");
       } catch (error) {
-        status.textContent = t("连接失败，请检查地址与密码。", "Connection failed. Check your URL and password.");
+        // A refusal the server explained is shown as it was explained. Only an error
+        // that arrived without a reason of its own is guessed at as an address or
+        // password problem — the plugin's own answer about a canvas it cannot make
+        // must not be relabelled as a wrong password.
+        status.textContent = String(error && error.message || "") || t("连接失败，请检查地址与密码。", "Connection failed. Check your URL and password.");
         throw error;
       }
     });
@@ -239,7 +235,7 @@
         if (!String(config.endpoint || "").trim()) return;
         u.validateEndpoint(config.endpoint); u.parseHeaders(config.customHeaders);
         if (!(Number(config.timeoutMs) >= 5000 && Number(config.timeoutMs) <= 300000)) throw new Error(t("超时需为 5–300 秒", "Use a timeout between 5 and 300 seconds"));
-        if (config.protocol === "cvp" && !(Number(config.refStrength) > 0 && Number(config.refStrength) <= 1)) throw new Error(t("参考图权重需为 0–1", "Reference weight must be between 0 and 1"));
+        if (config.protocol === "chp" && !(Number(config.refStrength) > 0 && Number(config.refStrength) <= 1)) throw new Error(t("参考图权重需为 0–1", "Reference weight must be between 0 and 1"));
       });
       await app.services.store.saveConfig(draft); ui.close(); app.events.emit("config:changed"); ui.toast(t("模型设置已保存", "Model settings saved"));
     });
@@ -396,13 +392,13 @@
     var fa = glyph, line = helpLine;
     ui.open({ title: t("使用说明", "How to draw"), html: '<div class="help-copy">' +
       helpSection(t("快速上手", "Quick start"), [
-        line(fa("fa-solid", "gear"), t("① 写提示词（中英文都行）", "1 · Describe it"), t("点画布上方的齿轮打开「作品设置」,在第一个框里写画面内容,中英文都行。接 CVP 插件时,只认英文的模型由插件在提交那一刻自动把中文译成英文;写英文就原样提交。越具体越准。", "Tap the gear above the canvas to open Artwork settings and write the scene in the first field. Chinese or English both work: with the CVP plugin, a model that only reads English gets a translation the plugin makes at submit time, and an English prompt is submitted exactly as written. The more specific, the better.")),
+        line(fa("fa-solid", "gear"), t("① 写提示词（中英文都行）", "1 · Describe it"), t("点画布上方的齿轮打开「作品设置」,在第一个框里写画面内容,中英文都行。接 CHP 插件时,只认英文的模型由插件在提交那一刻自动把中文译成英文;写英文就原样提交。越具体越准。", "Tap the gear above the canvas to open Artwork settings and write the scene in the first field. Chinese or English both work: with the CHP plugin, a model that only reads English gets a translation the plugin makes at submit time, and an English prompt is submitted exactly as written. The more specific, the better.")),
         line(fa("fa-solid", "pencil"), t("② 自由绘制", "2 · Draw freely"), t("铅笔勾轮廓，涂色铺色，也可以用「图片」导入参考。", "Sketch with Pencil, color with Brush, or import a reference with Image.")),
         line(fa("fa-solid", "wand-magic-sparkles") + fa("fa-solid", "dice"), t("③ 快速生成 / 随机创意", "3 · Fast or roll a seed"), t("点「快速」出实时预览；点骰子换一个随机数再生一次，换个构图。", "Tap Fast for a live preview, or the dice to roll a seed and generate again for a different take.")),
         line(fa("fa-regular", "gem"), t("④ 渲染大图", "4 · Render"), t("点「渲染」得到 1024 高清图；画布右下角钻石可全屏查看、单独下载。", "Tap Render for a 1024 image; the diamond on the canvas opens it fullscreen with its own download."))
       ]) +
       helpSection(t("作品设置", "Artwork settings"), [
-        line(fa("fa-solid", "gear"), t("提示词（重点）", "Description (key)"), t("齿轮是它唯一的入口。第一个框写画面内容,第二个框写不希望出现的东西,中英文都行,原样提交。写中文时由后台负责译成英文(CVP 插件自带翻译和缓存),应用不参与翻译,也不会改动你写的字；局部重绘用的是另一套单独的描述，两者不混用。", "The gear is the only way in. The first field is the scene, the second what to avoid, in Chinese or English, submitted as written. A Chinese prompt is translated by the backend — the CVP plugin ships its own translator and cache — so the app takes no part in it and never rewrites your words. Local redraw keeps its own separate description.")),
+        line(fa("fa-solid", "gear"), t("提示词（重点）", "Description (key)"), t("齿轮是它唯一的入口。第一个框写画面内容,第二个框写不希望出现的东西,中英文都行,原样提交。写中文时由后台负责译成英文(CHP 插件自带翻译和缓存),应用不参与翻译,也不会改动你写的字；局部重绘用的是另一套单独的描述，两者不混用。", "The gear is the only way in. The first field is the scene, the second what to avoid, in Chinese or English, submitted as written. A Chinese prompt is translated by the backend — the CHP plugin ships its own translator and cache — so the app takes no part in it and never rewrites your words. Local redraw keeps its own separate description.")),
         line(fa("fa-regular", "image"), t("图像权重（重点）", "Image weight (key)"), t("提示条上的滑竿：80% 为中性；调高更贴手绘稿，调低模型更自由。点左边的图片图标一键回到 80%。作品设置里的「绘制稿保留强度」就是这个值。", "The slider on the prompt bar: 80% is neutral. Higher sticks closer to your sketch, lower frees the model. The image icon on its left snaps back to 80%. Artwork settings exposes the same value as Sketch preservation."))
       ]) +
       helpSection(t("画布工具栏", "Canvas toolbar"), [
@@ -429,12 +425,12 @@
         line(fa("fa-solid", "download"), t("下载", "Download"), t("保存当前画布的实际显示效果。", "Saves the canvas exactly as displayed."))
       ]) +
       helpSection(t("模型", "Models"), [
-        line(fa("fa-solid", "cubes"), t("接上自己的模型", "Connect a model"), t("菜单里的「模型配置」按快速生图 / 局部重绘 / 高清渲染分三套，共享同一套地址与密码。推荐在本地 ComfyUI 装 HamDraw 插件（CVP），密码在插件的配置节点里设置。", "Models are set per task: quick draw, local redraw and render, sharing one address and password. Installing the HamDraw plugin (CVP) on a local ComfyUI is recommended; set its password in the plugin's config node."))
+        line(fa("fa-solid", "cubes"), t("接上自己的模型", "Connect a model"), t("菜单里的「模型配置」按快速生图 / 局部重绘 / 高清渲染分三套，共享同一套地址与密码。推荐在本地 ComfyUI 装 HamDraw 插件（CHP），密码在插件的配置节点里设置。", "Models are set per task: quick draw, local redraw and render, sharing one address and password. Installing the HamDraw plugin (CHP) on a local ComfyUI is recommended; set its password in the plugin's config node."))
       ]) +
       '</div>' });
   }
   function about() {
-    ui.open({ mode: "center", title: t("软件信息", "About HamDraw"), html: '<div class="about-brand"><span class="brand-mark">V</span><div><strong>HamDraw</strong><div class="about-meta">v' + app.version + ' · MIT</div></div></div><p>' + t("画下灵感，与 AI 一起完成。", "Sketch an idea. Create with AI.") + '</p><p class="about-meta">' + t("原生 HTML / CSS / JavaScript 开源 happ。模型由你选择，作品保存在当前应用。", "An open-source HTML / CSS / JavaScript happ. Your models, your artwork, stored in this app.") + '</p><a class="button button-secondary about-link" href="' + PROJECT_URL + '">' + glyph("fa-brands", "github") + t("GitHub 项目", "GitHub project") + '</a><p class="about-meta">© 2026 zhyuzh · Font Awesome Free (Haminn)</p>' });
+    ui.open({ mode: "center", title: t("软件信息", "About HamDraw"), html: '<div class="about-brand"><span class="brand-mark" aria-hidden="true"><img src="./app/assets/icon.webp" alt=""></span><div><strong>HamDraw</strong><div class="about-meta">v' + app.version + ' · MIT</div></div></div><p>' + t("画下灵感，与 AI 一起完成。", "Sketch an idea. Create with AI.") + '</p><p class="about-meta">' + t("原生 HTML / CSS / JavaScript 开源 happ。模型由你选择，作品保存在当前应用。", "An open-source HTML / CSS / JavaScript happ. Your models, your artwork, stored in this app.") + '</p><a class="button button-secondary about-link" href="' + PROJECT_URL + '">' + glyph("fa-brands", "github") + t("GitHub 项目", "GitHub project") + '</a><p class="about-meta">© 2026 zhyuzh · Font Awesome Free (Haminn)</p>' });
   }
   app.components.settings = { init: init, open: open, openColor: openColor };
 })(window.hamdraw);

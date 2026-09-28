@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Offline self-check for the CVP contract and its two projections.
+"""Offline self-check for the CHP contract.
 
 Runs anywhere — no ComfyUI, no aiohttp, no network, no model files.  The two
 modules ComfyUI normally provides (``folder_paths``, ``nodes``) plus ``aiohttp``
 are stubbed into ``sys.modules`` before the package is imported: importing
-``hamdraw_comfy`` runs ``__init__.py``, which pulls in the node definitions and
+``hamdraw_chp`` runs ``__init__.py``, which pulls in the node definitions and
 registers the HTTP routes, and neither is needed to inspect a document built
 purely from data.
 
@@ -15,7 +15,7 @@ What it locks down:
 * the information document: ``spec``, the capability ids, exactly one shared
   input schema, ``category`` / ``signature`` on every entry, and that the whole
   thing is plain JSON;
-* the signature grammar of ``plans/cvp-spec.md`` §2 — including that
+* the signature grammar of ``plans/chp-spec.md`` §2 — including that
   ``txt-ref23dgs`` splits on its *last* ``2``;
 * aliases (``qwen`` is ``render``) and the two boundary rules: an enumeration
   rejects an unknown value, a continuous value is clamped;
@@ -25,8 +25,9 @@ What it locks down:
   text and nothing else, so a better engine still hits;
 * the shipped defaults carry no deployment: an empty translator address and a
   cache dtype the model's own author would default to;
-* the legacy projection — the two old documents still carry the keys PoseGi
-  reads, and the config node reads its ranges from the capability table.
+* the config node reads its ranges from the capability table;
+* ``/chp`` and every alias root register exactly the same route set, so an
+  alias can never end up serving a subset of the API.
 """
 
 from __future__ import annotations
@@ -70,12 +71,12 @@ _stub("nodes", SaveImage=type("SaveImage", (), {}))
 # The settings file and the translation memory live next to each other, so
 # pointing the first at a scratch directory keeps this run out of the real
 # install — and lets the memory test pretend the process restarted.
-_SCRATCH = Path(tempfile.mkdtemp(prefix="cvp-test-"))
+_SCRATCH = Path(tempfile.mkdtemp(prefix="chp-test-"))
 os.environ["HAMDRAW_SETTINGS"] = str(_SCRATCH / "hamdraw_settings.json")
 for _name in ("HAMDRAW_PASSWORD", "HAMDRAW_TRANSLATE_URL", "HAMDRAW_TRANSLATE_MODEL"):
     os.environ.pop(_name, None)
 
-from hamdraw_comfy import capabilities, families, legacy, nodes, server, settings, translate  # noqa: E402
+from hamdraw_chp import capabilities, families, nodes, server, settings, translate  # noqa: E402
 
 
 def check(condition: bool, message: str) -> None:
@@ -109,8 +110,8 @@ def check_information_document() -> None:
     )
 
     # 1) 协议版本在响应体里,不在路径里
-    check(document["spec"] == "cvp/1", "协议版本必须放在响应体里")
-    check(document["plugin"]["version"] == "2.3.0", "插件版本要通过文档播报")
+    check(document["spec"] == "chp/1", "协议版本必须放在响应体里")
+    check(document["plugin"]["version"] == "2.4.0", "插件版本要通过文档播报")
     check(document["auth"]["required"] is True and document["auth"]["authorized"] is True, "auth 要如实反映传入值")
 
     # 2) 能力必须是四个语义 id,模型名不许当 id
@@ -140,10 +141,10 @@ def check_information_document() -> None:
               f"{entry['id']}: 实现细节不许播报给客户端")
 
     # 4) 端点给的是相对路径,三类都在
-    check(document["endpoints"]["info"] == "/cvp/info", "信息接口路径")
-    check(document["endpoints"]["jobs"] == "/cvp/jobs", "提交接口路径")
-    check(document["endpoints"]["progress"] == "/cvp/jobs/{job_id}/progress", "进度接口路径")
-    check(document["endpoints"]["translate"] == "/cvp/translate", "翻译接口路径")
+    check(document["endpoints"]["info"] == "/chp/info", "信息接口路径")
+    check(document["endpoints"]["jobs"] == "/chp/jobs", "提交接口路径")
+    check(document["endpoints"]["progress"] == "/chp/jobs/{job_id}/progress", "进度接口路径")
+    check(document["endpoints"]["translate"] == "/chp/translate", "翻译接口路径")
 
     # 5) 签名语法:除分隔符 2 外不许出现数字,且以最后一个 2 为界
     for entry in document["capabilities"]:
@@ -236,7 +237,7 @@ def check_translation_memory() -> None:
     check(translate.memory_size() == 1, "键不含引擎,换引擎不许产生第二条")
     check(translate.recall(source) == "a cat on a sofa v2", "后写的覆盖先写的")
     entries = json.loads(translate.memory_path().read_text(encoding="utf-8"))
-    check(entries["schema"] == "cvp-translation-memory/v1", "记忆库要有自己的 schema")
+    check(entries["schema"] == "chp-translation-memory/v1", "记忆库要有自己的 schema")
     entry = list(entries["entries"].values())[0]
     check(entry["engine"] == "engine-b", "引擎要作为旁注记下来,便于将来重刷")
     check(entry["source"] == source and entry["target"] == "en", "条目要记得原文与目标语言")
@@ -313,10 +314,11 @@ def check_nodes_read_the_table() -> None:
 
 
 def check_server_surface() -> None:
-    check(server.API_ROOT == "/cvp", "新接口根路径")
-    check(server.LEGACY_ROOT == "/hamdraw/v1", "旧接口根路径")
-    check(capabilities.API_ROOT == server.API_ROOT and capabilities.LEGACY_ROOT == server.LEGACY_ROOT,
+    check(server.API_ROOT == "/chp", "主接口根路径")
+    check(server.ALIAS_ROOTS == ("/cvp",), "旧主根只留 /cvp 一个别名")
+    check(capabilities.API_ROOT == server.API_ROOT and capabilities.ALIAS_ROOTS == server.ALIAS_ROOTS,
           "两处路径常量必须同源")
+    check(not hasattr(server, "LEGACY_ROOT"), "/hamdraw/v1 那套旧投影面已经拆掉了")
 
     expected = {
         "unauthorized": 401, "bad_request": 400, "unsupported_capability": 400,
@@ -357,69 +359,35 @@ def check_routes() -> None:
     sys.modules["server"] = module
 
     check(server.register_routes() is True, "路由注册必须成功")
-    check(fake.routes.registered["GET"] == {
-        "/cvp/info", "/cvp/jobs/{job_id}", "/cvp/jobs/{job_id}/progress",
-        "/cvp/jobs/{job_id}/output/{index}",
-        "/hamdraw/v1/plugins", "/hamdraw/v1/capabilities",
-        "/hamdraw/v1/jobs/{job_id}", "/hamdraw/v1/jobs/{job_id}/output/{index}",
-    }, f"GET 路由不对: {sorted(fake.routes.registered['GET'])}")
-    check(fake.routes.registered["POST"] == {
-        "/cvp/jobs", "/cvp/jobs/{job_id}/cancel", "/cvp/translate",
-        "/hamdraw/v1/jobs", "/hamdraw/v1/jobs/{job_id}/cancel", "/hamdraw/v1/translate",
-    }, f"POST 路由不对: {sorted(fake.routes.registered['POST'])}")
+
+    roots = (server.API_ROOT, *server.ALIAS_ROOTS)
+    expected_get = {f"{root}/info" for root in roots} | {
+        f"{root}{suffix}" for root in roots
+        for suffix in ("/jobs/{job_id}", "/jobs/{job_id}/progress", "/jobs/{job_id}/output/{index}")
+    }
+    expected_post = {
+        f"{root}{suffix}" for root in roots
+        for suffix in ("/jobs", "/jobs/{job_id}/cancel", "/translate")
+    }
+    check(fake.routes.registered["GET"] == expected_get,
+          f"GET 路由不对: {sorted(fake.routes.registered['GET'])}")
+    check(fake.routes.registered["POST"] == expected_post,
+          f"POST 路由不对: {sorted(fake.routes.registered['POST'])}")
+
+    # 别名不许只服务一部分: 每个根的路径集合去掉根名前缀后必须完全一样。
+    for method in ("GET", "POST"):
+        stripped = {
+            root: {path[len(root):] for path in fake.routes.registered[method] if path.startswith(root)}
+            for root in roots
+        }
+        first = stripped[roots[0]]
+        for root in roots[1:]:
+            check(stripped[root] == first, f"{root} 少注册了接口: {sorted(first - stripped[root])}")
 
     # 文档里播报的端点必须与实际注册的一致(除了占位符写法)
     for path in capabilities.ENDPOINTS.values():
         check(path in fake.routes.registered["GET"] or path in fake.routes.registered["POST"],
               f"文档播报的端点 {path} 没有注册")
-
-
-def check_legacy_projection() -> None:
-    described = translate.describe()
-    plugins = legacy.plugins_document(resolve=fake_models, authorized=True, auth_required=True,
-                                      translation=described, checkpoints=["a.safetensors"])
-    check(plugins["schema"] == "hamdraw-comfy/discovery/v1", "旧发现文档的 schema 不许变")
-    check(plugins["api_schema"] == "hamdraw-comfy/v2", "作业 API 版本不许跟着发现文档一起动")
-    check(plugins["checkpoints"] == ["a.safetensors"], "checkpoints 要原样带出")
-    check(plugins["auth"]["required"] is True and plugins["auth"]["authorized"] is True, "auth 要如实反映传入值")
-
-    ids = [entry["id"] for entry in plugins["plugins"]]
-    check(ids == capabilities.ids(), f"旧清单也要每条能力都在,得到 {ids}")
-    by_id = {entry["id"]: entry for entry in plugins["plugins"]}
-    check(by_id["render"]["english_only"] is False, "render 的编码器读得懂中文")
-    check(all(by_id[task]["english_only"] for task in ("quick", "inpaint", "upscale")), "checkpoint 三族只吃英文")
-    check(by_id["quick"]["model_roles"] == ["checkpoint"], "quick 只要一个 checkpoint")
-    check(by_id["render"]["model_roles"] == list(settings.MODEL_ROLES), "render 要三个槽位")
-    check(by_id["render"]["schema"]["properties"]["task"]["const"] == "render", "旧 schema 的 const 用新 id")
-    check(by_id["upscale"]["sizes"] == [[1024, 1024], [2048, 2048]], "画幅不许变")
-    check(by_id["quick"]["steps"]["allowed"] == [2, 4, 6, 8] and by_id["quick"]["steps"]["default"] == 8,
-          "步数不许变")
-    check(by_id["inpaint"]["schema"]["required"] == ["task", "image_base64", "mask_base64"], "inpaint 必带蒙版")
-    check("mask_base64" not in by_id["quick"]["schema"]["properties"], "quick 不该有蒙版字段")
-    grow = [item for item in by_id["inpaint"]["params"] if item["id"] == "grow_mask_by"]
-    check(len(grow) == 1 and grow[0]["maximum"] == 64, "蒙版外扩要有,上限 64")
-    policy = plugins["prompt_policy"]
-    check(policy["english_only_pipelines"] == ["quick", "inpaint", "upscale"], "要翻的就是这三条")
-    check(policy["any_language_pipelines"] == ["render"], "render 不该进必翻名单")
-    check(policy["translate_endpoint"] == "/hamdraw/v1/translate", "旧翻译端点")
-
-    old = legacy.capabilities_document(resolve=fake_models, authorized=False, auth_required=True,
-                                       translation=described, checkpoints=["a.safetensors"],
-                                       limits={"max_body_bytes": 1, "max_pending_jobs": 2})
-    check(old["schema"] == "hamdraw-comfy/v2", "旧能力文档的 schema 不许变")
-    check([task["id"] for task in old["tasks"]] == capabilities.ids(), "旧 tasks[] 也要每条都在")
-    for task in old["tasks"]:
-        for key in ("id", "label", "description", "needs", "sizes", "steps", "params", "estimated_seconds", "model"):
-            check(key in task, f"旧 tasks[] 缺字段 {key}")
-    check(old["tasks"][0]["model"] == "quick-checkpoint.safetensors", "旧 model 字段要给出实际用的文件")
-    check(old["auth"]["required"] is True, "旧文档只报要不要密码")
-    check(set(old["auth"]) == {"required", "scheme", "header", "hint"},
-          "旧 /capabilities 的 auth 就这四个键,多一个都不算旧形状")
-    check(old["checkpoints"] == ["a.safetensors"], "checkpoints 要原样带出")
-    check(old["translate"]["available"] is False, "翻译可用性要带出")
-
-    json.dumps(plugins, ensure_ascii=False)
-    json.dumps(old, ensure_ascii=False)
 
 
 def check_size_domain() -> None:
@@ -529,7 +497,6 @@ def main() -> None:
     check_settings()
     check_nodes_read_the_table()
     check_server_surface()
-    check_legacy_projection()
     check_routes()
 
     document = capabilities.document(
@@ -539,7 +506,8 @@ def main() -> None:
     print(f"test_spec.py: ok ({len(document['capabilities'])} 个能力,"
           f"{len(document['input_schemas'])} 份输入 schema,"
           f"{translate.memory_size()} 条翻译记忆,"
-          f"旧文档 {len(legacy.plugins_document(resolve=fake_models, authorized=True, auth_required=True, translation=translate.describe(), checkpoints=[])['plugins'])} 条插件)")
+          f"插件 {document['plugin']['id']} {document['plugin']['version']},"
+          f"根 {server.API_ROOT} + 别名 {list(server.ALIAS_ROOTS)})")
 
 
 if __name__ == "__main__":

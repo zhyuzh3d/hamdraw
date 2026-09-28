@@ -8,7 +8,7 @@ namespace, and the settings dialog feeds them to the host file writer, which han
 the user the system save dialog. What lands on disk is byte-for-byte the archive
 `release/hamdraw-comfyui-plugin-v<version>.zip` holds — nothing is downloaded.
 
-The version comes from comfyui-plugin/hamdraw_comfy/version.py — the same file
+The version comes from comfyui-plugin/hamdraw_chp/version.py — the same file
 tools/package-plugin.py reads — so the two stay in step.
 
 Usage:
@@ -25,7 +25,7 @@ import pathlib
 import re
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-VERSION_FILE = ROOT / "comfyui-plugin" / "hamdraw_comfy" / "version.py"
+VERSION_FILE = ROOT / "comfyui-plugin" / "hamdraw_chp" / "version.py"
 OUTPUT = ROOT / "app" / "assets" / "comfyui-plugin.js"
 LINE_CHARS = 96
 

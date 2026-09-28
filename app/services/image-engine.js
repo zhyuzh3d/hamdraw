@@ -68,7 +68,7 @@
     // never read as "paint this picture again", and it no longer needs one at all.
     //
     // What leaves is the prompt exactly as it was written. Deciding whether a
-    // model can read it is no longer this side's business: the CVP plugin owns
+    // model can read it is no longer this side's business: the CHP plugin owns
     // the translator and its memory, translates on submit when a text encoder
     // needs English, and reports back through `translated` / `prompt` /
     // `prompt_source` what it did. Translating here as well would be a second
@@ -96,8 +96,8 @@
       if (!automatic) app.events.emit("error", new Error(t("当前模型是纯文字模式，不支持局部蒙版", "This model is prompt-only and cannot use a mask")));
       return;
     }
-    if (masking && ["openai-images", "sd-webui", "cvp"].indexOf(config.protocol) < 0) {
-      if (!automatic) app.events.emit("error", new Error(t("当前模型不支持局部蒙版，请使用 CVP 插件、OpenAI Images 或 SD WebUI", "Masks need the CVP plugin, OpenAI Images, or SD WebUI")));
+    if (masking && ["openai-images", "sd-webui", "chp"].indexOf(config.protocol) < 0) {
+      if (!automatic) app.events.emit("error", new Error(t("当前模型不支持局部蒙版，请使用 CHP 插件、OpenAI Images 或 SD WebUI", "Masks need the CHP plugin, OpenAI Images, or SD WebUI")));
       return;
     }
     running = true; queuedSlot = ""; dismissed = false;
@@ -108,7 +108,7 @@
       var maskDataUrl = null, openAiMaskDataUrl = null;
       if (masking) {
         if (config.protocol === "openai-images") openAiMaskDataUrl = canvasInput.composeMask(true);
-        else if (config.protocol === "sd-webui" || config.protocol === "cvp") maskDataUrl = canvasInput.composeMask(false);
+        else if (config.protocol === "sd-webui" || config.protocol === "chp") maskDataUrl = canvasInput.composeMask(false);
       }
       // The reference image still travels inline in the request body, so it is
       // encoded as a JPEG that fits what the mask left of the transport budget; a

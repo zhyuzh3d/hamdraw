@@ -1,28 +1,41 @@
-"""The CVP HTTP API for the HamDraw ComfyUI plugin.
+"""The CHP HTTP API for the ComfyUI HamDraw plugin.
 
 Three kinds of endpoint, and nothing else:
 
-    GET  /cvp/info                        what this server can do        (public)
-    POST /cvp/jobs                        submit one job                 (Bearer)
-    GET  /cvp/jobs/{id}                   state, prompt, outputs         (Bearer)
-    GET  /cvp/jobs/{id}/progress          state only — the polling call  (Bearer)
-    GET  /cvp/jobs/{id}/output/{index}    fetch a finished image         (Bearer)
-    POST /cvp/jobs/{id}/cancel            drop a queued job              (Bearer)
-    POST /cvp/translate                   pre-translate a prompt         (Bearer)
+    GET  /chp/info                        what this server can do        (public)
+    POST /chp/jobs                        submit one job                 (Bearer)
+    GET  /chp/jobs/{id}                   state, prompt, outputs         (Bearer)
+    GET  /chp/jobs/{id}/progress          state only — the polling call  (Bearer)
+    GET  /chp/jobs/{id}/output/{index}    fetch a finished image         (Bearer)
+    POST /chp/jobs/{id}/cancel            drop a queued job              (Bearer)
+    POST /chp/translate                   pre-translate a prompt         (Bearer)
 
-``/cvp/info`` is the one a client calls first, and it answers with the whole
+``/chp/info`` is the one a client calls first, and it answers with the whole
 contract — the capabilities, the request schema they share, which model backs
 each one and whether it is installed, and whether the password that arrived was
 the right one.  It answers even when the password is wrong on purpose: knowing
 *what* a server can do should not require having already configured it, and one
 call then tells a client both "the address is right" and "the password is not".
-The contract itself is defined in ``plans/cvp-spec.md``; the table it is built
-from lives in :mod:`hamdraw_comfy.capabilities`.
+The contract itself is defined in ``plans/``; the table it is built from lives
+in :mod:`hamdraw_chp.capabilities`.
 
 The paths never carry a version.  The protocol version travels in the document
 as ``spec``, so a client never has to guess a newer path, and a server may add
 capabilities and fields without breaking one that is already shipped: a client
 is required to ignore what it does not know.
+
+Roots
+-----
+``/chp`` is the primary root.  ``/cvp`` — the root this plugin served before it
+was renamed — is registered as an **alias**: the same handlers, the same
+document shapes, the same answer.  It exists only so a client build that
+hardcoded the old root keeps working while it is being updated; nothing new
+should call it, and it can be dropped once no shipped build does.
+
+Nothing else is served.  The ``/hamdraw/v1`` projections that the pre-rename
+PoseGi called were removed together with PoseGi's migration: while a projection
+layer exists, every capability has two shapes to keep in step, and the only
+consumer was one client that has now moved.
 
 Authentication
 --------------
@@ -30,7 +43,7 @@ The password set in the ``HamDrawConfig`` node (or the ``HAMDRAW_PASSWORD``
 environment variable) protects every job endpoint.  It is sent as
 ``Authorization: Bearer <password>``.  A wrong password answers ``401
 unauthorized`` and nothing is queued.  Leaving it empty disables the check and
-``/cvp/info`` says so through ``auth.required``.
+``/chp/info`` says so through ``auth.required``.
 
 Images are uploaded inline as base64 in the job body and are written into
 ``input/hamdraw/`` before the graph runs, so a built-in graph can reference
@@ -46,13 +59,6 @@ a job cannot feed a model something it cannot read.  A client may translate
 earlier and show the user the result; that is a recommendation, not a rule.
 Every answer says which of the two happened through ``prompt`` /
 ``prompt_source`` / ``translated``.
-
-Legacy paths
-------------
-``/hamdraw/v1/*`` is what shipped clients and PoseGi already call.  Those
-routes keep answering **their old document shapes** (see :mod:`hamdraw_comfy.
-legacy`) and share the job handlers with the new ones, so nothing that works
-today stops working.  Nothing new should call them.
 """
 
 from __future__ import annotations
@@ -74,13 +80,12 @@ from aiohttp import web
 
 from . import capabilities as capabilities_module
 from . import families
-from . import legacy
 from . import settings as settings_module
 from . import translate as translate_module
 from .version import __version__
 
 API_ROOT = capabilities_module.API_ROOT
-LEGACY_ROOT = capabilities_module.LEGACY_ROOT
+ALIAS_ROOTS = capabilities_module.ALIAS_ROOTS
 INPUT_SUBFOLDER = "hamdraw"
 CLIENT_ID = "hamdraw"
 
@@ -185,18 +190,19 @@ def _authorized(request: web.Request) -> bool:
     return hmac.compare_digest(_token_of(request), expected)
 
 
-def _is_legacy(request: web.Request) -> bool:
-    """Which of the two path families answered this request.
+def _root_of(request: web.Request) -> str:
+    """Which root this request arrived on, so answers stay on that same root.
 
-    The handlers are shared, so the *shape* of the answer is decided here: a
-    client that calls the old path gets the old body, and the two never mix.
+    A client that reached the server through the ``/cvp`` alias must get its
+    output URLs back under ``/cvp`` — it has no reason to know ``/chp`` exists,
+    and handing it a path it never asked about would send it somewhere its own
+    allow-list may not cover.
     """
-    return str(request.path or "").startswith(LEGACY_ROOT)
-
-
-def _who(legacy_request: bool, capability: str) -> dict[str, Any]:
-    """How the two path families name a capability in ``detail``."""
-    return {"task": capability} if legacy_request else {"capability": capability}
+    path = str(request.path or "")
+    for root in (API_ROOT, *ALIAS_ROOTS):
+        if path == root or path.startswith(root + "/"):
+            return root
+    return API_ROOT
 
 
 # --------------------------------------------------------------------------- #
@@ -482,58 +488,27 @@ def _queue_position(job_id: str, running: list[str], pending: list[str]) -> int 
     return None
 
 
-def _legacy_progress(job: dict[str, Any], state: str) -> float | None:
-    """The old fabricated percentage, kept only for the old paths.
-
-    Derived from the capability's typical duration rather than measured, so it
-    is a guess — the CVP paths report ``null`` instead of making one up.
-    """
-    if state == "completed":
-        return 1.0
-    if state in ("failed", "cancelled"):
-        return 0.0
-    if state not in ("queued", "running"):
-        return None
-    expected = max(float(job.get("typical_seconds") or 1.0), 0.4)
-    elapsed = max(0.0, time.time() - float(job.get("created") or time.time()))
-    if state == "queued":
-        return round(min(0.05, elapsed / expected * 0.05), 4)
-    return round(min(0.95, elapsed / expected), 4)
-
-
 def _describe(job: dict[str, Any], running: list[str], pending: list[str],
-              entry: dict[str, Any] | None, *, legacy_request: bool = False) -> dict[str, Any]:
+              entry: dict[str, Any] | None, *, output_root: str = API_ROOT) -> dict[str, Any]:
     state = _state_of(job, running, pending, entry)
     job_id = str(job["id"])
-    root = LEGACY_ROOT if legacy_request else API_ROOT
-    outputs = _outputs_of(job_id, entry, root)
+    outputs = _outputs_of(job_id, entry, output_root)
 
-    if legacy_request:
-        payload: dict[str, Any] = {
-            "id": job_id,
-            "task": str(job.get("requested") or job.get("capability") or ""),
-            "state": state,
-            "progress": _legacy_progress(job, state),
-            "created": job.get("created"),
-            "estimated_seconds": job.get("typical_seconds"),
-            "outputs": [{key: item[key] for key in ("filename", "subfolder", "type", "url")} for item in outputs],
-        }
-    else:
-        payload = {
-            "id": job_id,
-            "capability": str(job.get("capability") or ""),
-            "state": state,
-            "queue_position": _queue_position(job_id, running, pending),
-            # Never a fabricated number: the CVP contract allows null.
-            "progress": None,
-            "created": job.get("created"),
-            "typical_seconds": job.get("typical_seconds"),
-            "prompt": str(job.get("prompt") or ""),
-            "prompt_source": str(job.get("prompt_source") or ""),
-            "translated": bool(job.get("translated")),
-            "ignored": list(job.get("ignored") or []),
-            "outputs": outputs,
-        }
+    payload: dict[str, Any] = {
+        "id": job_id,
+        "capability": str(job.get("capability") or ""),
+        "state": state,
+        "queue_position": _queue_position(job_id, running, pending),
+        # Never a fabricated number: the CHP contract allows null.
+        "progress": None,
+        "created": job.get("created"),
+        "typical_seconds": job.get("typical_seconds"),
+        "prompt": str(job.get("prompt") or ""),
+        "prompt_source": str(job.get("prompt_source") or ""),
+        "translated": bool(job.get("translated")),
+        "ignored": list(job.get("ignored") or []),
+        "outputs": outputs,
+    }
     if state == "failed":
         payload["error"] = _error_of(entry) or "execution_error"
     return payload
@@ -624,7 +599,7 @@ async def _interrupt_running() -> bool:
 # --------------------------------------------------------------------------- #
 
 async def info(request: web.Request) -> web.Response:
-    """``GET /cvp/info`` — the whole contract, and deliberately public.
+    """``GET /chp/info`` — the whole contract, and deliberately public.
 
     A wrong password is not an error here: ``auth.authorized`` says which it was,
     which is what lets one call answer "is the address right" and "is the
@@ -642,51 +617,23 @@ async def info(request: web.Request) -> web.Response:
     )
 
 
-async def legacy_plugins(request: web.Request) -> web.Response:
-    """The old discovery document, projected from the capability table."""
-    return _json(
-        legacy.plugins_document(
-            resolve=_models_of,
-            authorized=_authorized(request),
-            auth_required=bool(_password()),
-            translation=translate_module.describe(),
-            checkpoints=_available_files("checkpoints"),
-            auth_hint=AUTH_HINT,
-        )
-    )
-
-
-async def legacy_capabilities(request: web.Request) -> web.Response:
-    """The old capability document, projected from the same table."""
-    return _json(
-        legacy.capabilities_document(
-            resolve=_models_of,
-            authorized=_authorized(request),
-            auth_required=bool(_password()),
-            translation=translate_module.describe(),
-            checkpoints=_available_files("checkpoints"),
-            limits={"max_body_bytes": MAX_BODY_BYTES, "max_pending_jobs": MAX_PENDING_JOBS},
-        )
-    )
-
-
 # --------------------------------------------------------------------------- #
 # jobs
 # --------------------------------------------------------------------------- #
 
-def _no_model(capability: str, legacy_request: bool, models: list[dict[str, Any]],
+def _no_model(capability: str, models: list[dict[str, Any]],
               folder: str, name: str) -> web.Response:
     """The one ``no_model`` answer, from the one place that decides it."""
     if folder:
         return _fail("no_model", message=f"模型 {name} 不在 ComfyUI 的 {folder} 目录里。",
-                     detail={**_who(legacy_request, capability), "role": folder, "available": _available_files(folder)})
+                     detail={"capability": capability, "role": folder, "available": _available_files(folder)})
     missing = [item["role"] for item in models if not item.get("ready")]
     return _fail("no_model",
-                 detail={**_who(legacy_request, capability), "missing": missing,
+                 detail={"capability": capability, "missing": missing,
                          "models": {item["role"]: item["name"] for item in models}})
 
 
-def _resolve_models(capability: dict[str, Any], legacy_request: bool) -> tuple[dict[str, str], web.Response | None]:
+def _resolve_models(capability: dict[str, Any]) -> tuple[dict[str, str], web.Response | None]:
     """The files this capability will run on, or the error to answer with.
 
     Checkpoint capabilities fall back to the ``quick`` checkpoint when their own
@@ -697,11 +644,11 @@ def _resolve_models(capability: dict[str, Any], legacy_request: bool) -> tuple[d
     if "checkpoint" in (capability.get("roles") or []):
         name = _checkpoint(capability["id"])
         if not name:
-            return {}, _fail("no_model", detail={**_who(legacy_request, capability["id"]),
+            return {}, _fail("no_model", detail={"capability": capability["id"],
                                                  "checkpoints": _available_files("checkpoints")})
         available = _available_files("checkpoints")
         if available and name not in available:
-            return {}, _no_model(capability["id"], legacy_request, [], "checkpoints", name)
+            return {}, _no_model(capability["id"], [], "checkpoints", name)
         return {"checkpoint": name}, None
 
     files = {role: str(_model_files(capability["id"]).get(role) or "").strip()
@@ -710,16 +657,15 @@ def _resolve_models(capability: dict[str, Any], legacy_request: bool) -> tuple[d
         name = files[role]
         folder = capabilities_module.ROLE_FOLDERS.get(role, "")
         if not name:
-            return {}, _fail("no_model", detail={**_who(legacy_request, capability["id"]),
+            return {}, _fail("no_model", detail={"capability": capability["id"],
                                                  "missing": role, "models": files})
         available = _available_files(folder)
         if available and name not in available:
-            return {}, _no_model(capability["id"], legacy_request, [], folder, name)
+            return {}, _no_model(capability["id"], [], folder, name)
     return files, None
 
 
 async def create_job(request: web.Request) -> web.Response:
-    legacy_request = _is_legacy(request)
     if not _authorized(request):
         return _fail("unauthorized")
 
@@ -730,12 +676,15 @@ async def create_job(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return _fail("bad_request")
 
-    # ``capability`` is the CVP name and wins; ``task`` is what older clients
-    # still send, and what the old paths keep answering with.
+    # ``capability`` is the CHP name and wins; ``task`` is the spelling an older
+    # client still sends, and is accepted as an alias for the same thing.
     requested = str(body.get("capability") or body.get("task") or "").strip().lower()
     capability = capabilities_module.find(requested)
     if capability is None:
-        if legacy_request:
+        # An older client only ever sends ``task`` and only has a branch for
+        # ``unsupported_task``; answer in its own vocabulary instead of handing
+        # it a code it cannot interpret.
+        if not body.get("capability") and body.get("task"):
             return _fail("unsupported_task", detail={"task": requested})
         return _fail("unsupported_capability", detail={"capability": requested})
     name = str(capability["id"])
@@ -761,7 +710,7 @@ async def create_job(request: web.Request) -> web.Response:
     if needs.get("image") and not _sent(body, "image_base64", "image"):
         return _fail("bad_image")
 
-    models, refused = _resolve_models(capability, legacy_request)
+    models, refused = _resolve_models(capability)
     if refused is not None:
         return refused
 
@@ -879,11 +828,10 @@ async def create_job(request: web.Request) -> web.Response:
         "cancelled": False,
     }
     _track(job)
-    return _json({"job": _describe(job, running, pending + [prompt_id], None, legacy_request=legacy_request)}, status=202)
+    return _json({"job": _describe(job, running, pending + [prompt_id], None, output_root=_root_of(request))}, status=202)
 
 
 async def job_status(request: web.Request) -> web.Response:
-    legacy_request = _is_legacy(request)
     if not _authorized(request):
         return _fail("unauthorized")
     job_id = str(request.match_info.get("job_id") or "").strip()
@@ -894,11 +842,11 @@ async def job_status(request: web.Request) -> web.Response:
             return _fail("not_found")
         job = {"id": job_id, "capability": "", "requested": "", "created": time.time(), "cancelled": False}
     running, pending = _queue_snapshot()
-    return _json({"job": _describe(job, running, pending, entry, legacy_request=legacy_request)})
+    return _json({"job": _describe(job, running, pending, entry, output_root=_root_of(request))})
 
 
 async def job_progress(request: web.Request) -> web.Response:
-    """``GET /cvp/jobs/{id}/progress`` — what a client polls while it waits.
+    """``GET /chp/jobs/{id}/progress`` — what a client polls while it waits.
 
     Returns state and queue position only.  It reads the history entry because
     that is the only way to know whether a job that left the queue succeeded,
@@ -925,7 +873,7 @@ async def job_output(request: web.Request) -> web.Response:
         index = int(str(request.match_info.get("index") or "0"))
     except (TypeError, ValueError):
         return _fail("bad_request")
-    files = _outputs_of(job_id, _history_entry(job_id), LEGACY_ROOT if _is_legacy(request) else API_ROOT)
+    files = _outputs_of(job_id, _history_entry(job_id), _root_of(request))
     if index < 0 or index >= len(files):
         return _fail("not_found")
     chosen = files[index]
@@ -939,7 +887,6 @@ async def job_output(request: web.Request) -> web.Response:
 
 
 async def cancel_job(request: web.Request) -> web.Response:
-    legacy_request = _is_legacy(request)
     if not _authorized(request):
         return _fail("unauthorized")
     job_id = str(request.match_info.get("job_id") or "").strip()
@@ -960,7 +907,7 @@ async def cancel_job(request: web.Request) -> web.Response:
     if job is None:
         return _fail("not_found")
     running, pending = _queue_snapshot()
-    return _json({"job": _describe(job, running, pending, _history_entry(job_id), legacy_request=legacy_request)})
+    return _json({"job": _describe(job, running, pending, _history_entry(job_id), output_root=_root_of(request))})
 
 
 async def translate_prompts(request: web.Request) -> web.Response:
@@ -1007,25 +954,17 @@ def register_routes() -> bool:
         except Exception:
             pass
 
-    # The contract.
-    routes.get(f"{API_ROOT}/info")(info)
-    routes.post(f"{API_ROOT}/jobs")(create_job)
-    routes.get(f"{API_ROOT}/jobs/{{job_id}}")(job_status)
-    routes.get(f"{API_ROOT}/jobs/{{job_id}}/progress")(job_progress)
-    routes.get(f"{API_ROOT}/jobs/{{job_id}}/output/{{index}}")(job_output)
-    routes.post(f"{API_ROOT}/jobs/{{job_id}}/cancel")(cancel_job)
-    routes.post(f"{API_ROOT}/translate")(translate_prompts)
-
-    # The paths shipped clients (and PoseGi) already call.  Same job handlers,
-    # old response shapes; see the module docstring and hamdraw_comfy.legacy.
-    routes.get(f"{LEGACY_ROOT}/plugins")(legacy_plugins)
-    routes.get(f"{LEGACY_ROOT}/capabilities")(legacy_capabilities)
-    routes.post(f"{LEGACY_ROOT}/jobs")(create_job)
-    routes.get(f"{LEGACY_ROOT}/jobs/{{job_id}}")(job_status)
-    routes.get(f"{LEGACY_ROOT}/jobs/{{job_id}}/output/{{index}}")(job_output)
-    routes.post(f"{LEGACY_ROOT}/jobs/{{job_id}}/cancel")(cancel_job)
-    routes.post(f"{LEGACY_ROOT}/translate")(translate_prompts)
+    # The contract, on the primary root and on every alias.  One loop, so an
+    # alias can never end up serving a subset of the API.
+    for root in (API_ROOT, *ALIAS_ROOTS):
+        routes.get(f"{root}/info")(info)
+        routes.post(f"{root}/jobs")(create_job)
+        routes.get(f"{root}/jobs/{{job_id}}")(job_status)
+        routes.get(f"{root}/jobs/{{job_id}}/progress")(job_progress)
+        routes.get(f"{root}/jobs/{{job_id}}/output/{{index}}")(job_output)
+        routes.post(f"{root}/jobs/{{job_id}}/cancel")(cancel_job)
+        routes.post(f"{root}/translate")(translate_prompts)
     return True
 
 
-__all__ = ["API_ROOT", "LEGACY_ROOT", "register_routes"]
+__all__ = ["ALIAS_ROOTS", "API_ROOT", "register_routes"]

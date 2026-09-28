@@ -1,7 +1,12 @@
-# CVP 开发计划
+# CHP 开发计划
 
-依据: [`cvp-spec.md`](./cvp-spec.md)(CVP 规范 v1)。
-范围: **CVP 插件全面升级** + **A1X 上 ComfyUI 的 CVP 能力升级** + **Hamdraw 应用升级**。
+> **2026-09-28 更名**: 插件由 **CVP**(`hamdraw_comfy/`、`/cvp`、`cvp/1`)更名为
+> **CHP**(`hamdraw_chp/`、`/chp`、`chp/1`), `/cvp` 保留为别名根。
+> 下面 **第 1~4 节（设计）** 一律用新名；**第 5 节起的带日期记录**是当时的原始事实，
+> 里面的路径、版本号、业主原话**逐字保留改名前/当时的样子**，不做换算。
+
+依据: [`chp-spec.md`](./chp-spec.md)(CHP 规范 v1)。
+范围: **CHP 插件全面升级** + **A1X 上 ComfyUI 的 CHP 能力升级** + **Hamdraw 应用升级**。
 **PoseGi 本轮不动** —— 但它的存量调用必须继续可用(见第 3.3 节)。
 
 ---
@@ -9,7 +14,7 @@
 ## 0. 约束(动手前先认下来)
 
 - **收敛优先。** 不引入注册机制、不引入依赖、不做规范里第 8 节列出的"不做"清单。
-- **插件是独立产物**, 不走 happ 打包链。`hamdraw_comfy/` 目录本身就是要拷到 ComfyUI 的东西。
+- **插件是独立产物**, 不走 happ 打包链。`hamdraw_chp/` 目录本身就是要拷到 ComfyUI 的东西。
 - **只升插件的版本号**(`version.py`: `2.1.0` → `2.2.0`), 因为插件版本会通过 `plugin.version` 对外播报。
   **不升 happ 版本、不生成新的 happ 发布包**(`release/hamdraw-v0.4.38.zip` 之类) —— 那不是本次任务。
 - 插件 zip 要照常生成一次(`tools/package-plugin.py`)并重新生成应用内嵌副本(`tools/embed-plugin.py`),
@@ -22,15 +27,15 @@
 
 | 阶段 | 内容 | 验收判据(必须可执行) |
 |---|---|---|
-| P0 | 规范冻结 | `plans/cvp-spec.md` 落盘; 第 8 节"不做"清单确认 |
-| P1 | 插件: 能力模型 + 信息接口 | `GET /cvp/info` 200, `spec == "cvp/1"`, 4 个能力, `input_schemas` 只有 1 份; 离线测试通过 |
+| P0 | 规范冻结 | `plans/chp-spec.md` 落盘; 第 8 节"不做"清单确认 |
+| P1 | 插件: 能力模型 + 信息接口 | `GET /chp/info` 200, `spec == "chp/1"`, 4 个能力, `input_schemas` 只有 1 份; 离线测试通过 |
 | P2 | 插件: 家族拆分 | 两个家族模块独立; 生成图与拆分前**逐节点等价**; 离线测试通过 |
-| P3 | 插件: 三类接口 | `/cvp/*` 七条路由全通; 旧 `/hamdraw/v1/*` 仍返回**旧形状**; `/progress` 轻量 |
+| P3 | 插件: 三类接口 | `/chp/*` 七条路由全通; 旧 `/chp/*` 仍返回**旧形状**; `/progress` 轻量 |
 | P4 | 插件: 自动翻译 + 记忆库 | 中文提示词提交 → `translated: true` 且出图; 重启进程后同一提示词命中缓存 |
 | P5 | 插件: 去设备化 | 默认翻译地址为空; qwen 缓存参数进设置; 进度不再用 `estimated_seconds` 编造 |
 | P6 | 插件: 离线测试 | `python3 tests/test_spec.py` 通过, 覆盖信息文档/签名/别名/记忆库/越界规则 |
-| P7 | A1X 部署 | 两侧摘要一致; `/cvp/info` 200; 旧 `/hamdraw/v1/plugins` 仍 200; 真机中文单出图 |
-| P8 | 应用: 去翻译 + 消费新接口 | `translate.js` 及引用全清; 测试连接读 `/cvp/info`; 不再硬编码画幅/步数 |
+| P7 | A1X 部署 | 两侧摘要一致; `/chp/info` 200; 旧 `/chp/plugins` 仍 200; 真机中文单出图 |
+| P8 | 应用: 去翻译 + 消费新接口 | `translate.js` 及引用全清; 测试连接读 `/chp/info`; 不再硬编码画幅/步数 |
 | P9 | 应用: 热更新到设备 | 设备上实测: 连接 → 出图 → 中文提示词自动译英提示 |
 
 ---
@@ -39,7 +44,7 @@
 
 ### P1 插件: 能力模型与信息接口
 
-**新增** `comfyui-plugin/hamdraw_comfy/capabilities.py`, 承担三件事:
+**新增** `comfyui-plugin/hamdraw_chp/capabilities.py`, 承担三件事:
 
 1. `CAPABILITIES` —— 能力定义表(从 `workflows.TASK_SPECS` 迁移并重命名):
 
@@ -60,7 +65,7 @@
 
 **删除** `discovery.py`(职责被 `capabilities.py` 取代, 不留两份文档构建器)。
 
-**判据**: `GET /cvp/info` 200 且 `spec == "cvp/1"`; `capabilities` 恰好 4 条且无 `qwen`;
+**判据**: `GET /chp/info` 200 且 `spec == "chp/1"`; `capabilities` 恰好 4 条且无 `qwen`;
 `input_schemas` 恰好 1 份; `python3 tests/test_spec.py` 通过。
 
 ### P2 插件: 家族拆分
@@ -85,13 +90,13 @@
 `server.py` 注册七条新路由:
 
 ```
-GET  /cvp/info
-POST /cvp/jobs
-GET  /cvp/jobs/{job_id}
-GET  /cvp/jobs/{job_id}/progress
-GET  /cvp/jobs/{job_id}/output/{index}
-POST /cvp/jobs/{job_id}/cancel
-POST /cvp/translate
+GET  /chp/info
+POST /chp/jobs
+GET  /chp/jobs/{job_id}
+GET  /chp/jobs/{job_id}/progress
+GET  /chp/jobs/{job_id}/output/{index}
+POST /chp/jobs/{job_id}/cancel
+POST /chp/translate
 ```
 
 要点:
@@ -105,8 +110,8 @@ POST /cvp/translate
 
 **兼容别名**(见 3.3): 旧路由**返回旧形状**, 不返回新文档。
 
-**判据**: 七条新路由全部可调; 旧 `/hamdraw/v1/capabilities` 仍含 `schema: "hamdraw-comfy/v2"`、
-`tasks[]`、`auth.required`; 旧 `/hamdraw/v1/plugins` 仍含 `plugins[]` 且每项有 `english_only`/`sizes`/`steps`。
+**判据**: 七条新路由全部可调; 旧 `/chp/capabilities` 仍含 `schema: "hamdraw-comfy/v2"`、
+`tasks[]`、`auth.required`; 旧 `/chp/plugins` 仍含 `plugins[]` 且每项有 `english_only`/`sizes`/`steps`。
 
 ### P4 插件: 自动翻译 + 持久化记忆库
 
@@ -124,7 +129,7 @@ POST /cvp/translate
   失败/未启用 → 用原文。**任何情况都不让任务失败。**
 - `describe()` 供信息接口播报: `available` / `mode: "auto-on-submit"` / `target` / 后端模型 / 记忆库条数与上限 / 规则。
 
-`POST /cvp/translate` 保留原响应形状(给想提前预热的客户端)。
+`POST /chp/translate` 保留原响应形状(给想提前预热的客户端)。
 
 **判据**: 中文提示词提交 `quick` → 返回 `translated: true`、`prompt_source` 是中文、`prompt` 是英文;
 同提示词第二次提交 → `cached` 生效(日志/`memory.entries` 计数不增); 杀掉进程重启后仍命中。
@@ -163,18 +168,18 @@ POST /cvp/translate
 
 按技能 `a1x-comfy-device` 第 4.1 节的闭环, 不重传整个目录只传改动文件:
 
-1. 宿主侧备份: `cp -r hamdraw_comfy hamdraw_comfy.bak-<日期>`(或逐文件 `.bak-<日期>`)。
-2. 传文件到 `/home/AOKZOE/AI/minimax-h3/custom_nodes/hamdraw_comfy/`(`ssh AOKZOE@192.168.124.31`,
+1. 宿主侧备份: `cp -r hamdraw_chp hamdraw_chp.bak-<日期>`(或逐文件 `.bak-<日期>`)。
+2. 传文件到 `/home/AOKZOE/AI/minimax-h3/custom_nodes/hamdraw_chp/`(`ssh AOKZOE@192.168.124.31`,
    expect 送密码 `bazzite`; **不要用 heredoc 怼文件内容**)。
 3. 更新 `hamdraw_settings.json`: 补 `translate.url`(指向设备上真实的翻译后端)与 qwen 缓存参数。
    **先确认 8022 到底有没有在跑 OpenAI 兼容的 chat 接口** —— 技能里只记了 8020/8021 是 TTS,
    没有 8022 的记录, 这条必须现场核实, 不能沿用旧默认值。
 4. 两侧摘要逐一对照(`shasum -a 256 *.py` vs `sha256sum *.py` / `md5 -q` vs `md5sum`)。
 5. `systemctl --user restart minimax-h3-comfy`, 约 45s 后轮询。
-6. **验证判据**: `curl --noproxy '*' http://192.168.124.31:8189/cvp/info` 200;
-   `http://192.168.124.31:8189/hamdraw/v1/plugins` 仍 200(**PoseGi 的存量路径**);
+6. **验证判据**: `curl --noproxy '*' http://192.168.124.31:8189/chp/info` 200;
+   `http://192.168.124.31:8189/chp/plugins` 仍 200(**PoseGi 的存量路径**);
    404 才代表没加载。
-7. 端到端: `POST /cvp/jobs` 用中文提示词提交 `quick` → 轮询到 `completed` → 取图确认 `image/png`,
+7. 端到端: `POST /chp/jobs` 用中文提示词提交 `quick` → 轮询到 `completed` → 取图确认 `image/png`,
    且响应 `translated: true`。
 
 ### P8 Hamdraw 应用: 去翻译 + 消费新接口
@@ -185,14 +190,14 @@ POST /cvp/translate
 - `app/components/settings.js` 里的翻译标签页(`TRANSLATE_TAB` / `wantsTranslateTab`)与探测 UI;
 - 所有调用点(`english()` / `translated()` / `translate()` / `probe()` / `load()`)与相关文案。
 
-客户端**不再翻译**: 提交时把用户原文交给 CVP, 由后端按第 5 节兜底。
+客户端**不再翻译**: 提交时把用户原文交给 CHP, 由后端按第 5 节兜底。
 
 **改造** `app/services/providers.js`:
 
-- `test()`: 改打 `/cvp/info`, 一次回答 地址通不通 / 密码对不对 / 能力在不在 / 模型就绪没 /
+- `test()`: 改打 `/chp/info`, 一次回答 地址通不通 / 密码对不对 / 能力在不在 / 模型就绪没 /
   这条能力要不要英文。落到卡片上的信息取自能力的 `label` / `values` / `models` / `ready`。
-- `cvpGenerate()`: 提交字段 `capability`(不传旧 `task`); **能力在 `ignores` 里声明了
-  `negative_prompt` 就不发它**; 轮询改用 `/cvp/jobs/{id}/progress`, 完成后再取 `/jobs/{id}`。
+- `chpGenerate()`: 提交字段 `capability`(不传旧 `task`); **能力在 `ignores` 里声明了
+  `negative_prompt` 就不发它**; 轮询改用 `/chp/jobs/{id}/progress`, 完成后再取 `/jobs/{id}`。
 - `progress` 为 `null` 时显示不确定态("生成中"), 不再画假百分比。
 - 画幅/步数/默认值改由能力信息驱动(取不到时回落到现有默认)。
 
@@ -224,13 +229,19 @@ POST /cvp/translate
 不做 OpenAPI 生成、不做 MCP 门面、不做推送/SSE、不做多目标语言、不做能力级版本号、
 不做插件化家族注册、不做账号与配额。**不升 happ 版本、不生成新的 happ 发布包。**
 
-### 3.3 PoseGi 存量路径(本轮不改它, 但也不许弄坏它)
+### 3.3 PoseGi 存量路径 —— 已结清(2026-09-28)
 
-已发布的 PoseGi 读的是 `/hamdraw/v1/plugins`(发现文档)与 `/hamdraw/v1/capabilities`。
-因此这两个旧路由**继续返回旧形状**(由新能力表投影生成), 而不是返回新文档。
-旧 `/hamdraw/v1/jobs*` 与 `/cvp/jobs*` 是**同一批处理函数**, 请求侧同时接受 `task` 与 `capability`。
+一轮里曾经保留 `/hamdraw/v1/*` 那套旧投影面, 专门伺候已发布的 PoseGi(它读
+`/hamdraw/v1/plugins` 与 `/hamdraw/v1/capabilities`, 返回的是 `hamdraw-comfy/discovery/v1`
+那一套**旧形状**)。**这条债务已经还完**: PoseGi 本轮改为直接读 `/chp/info`, 于是
+`legacy.py`、两条旧路由、两个冻结 schema 常量、以及 `job.progress` 的估算百分比整块删除。
 
-**删除条件**: PoseGi 升级到读 `/cvp/info` 之后, 旧投影函数可整体删掉。
+留在这里的理由只有一个: 一套投影面意味着每条能力要维护**两种形状**, 而它唯一的消费者
+已经迁移 —— 插件功能以最新的 chataxi / hamdraw 需求为准, PoseGi 跟随它们, 而不是反过来
+让插件替旧客户端背着一个兼容层。
+
+`/cvp` 是另一回事: 它不是旧形状, 只是**旧根名**, 返回的文档与 `/chp` 完全一样, 所以它作为
+`ALIAS_ROOTS` 留着, 成本是 `register_routes()` 里多转一圈循环。
 
 ### 3.4 回滚
 
@@ -253,8 +264,10 @@ P1–P5 都在本机完成并可离线自检; P6 通过后才首次触碰设备,
 
 ### 5.1 起因(业主两条原则)
 
-> CVP 插件应该不锁定具体分辨率, 只枚举 ComfyUI 能够输出的模型支持的分辨率。
-> CVP 提供分辨率, happ 根据实际情况选用。
+> 插件应该不锁定具体分辨率, 只枚举 ComfyUI 能够输出的模型支持的分辨率。
+> 提供分辨率, happ 根据实际情况选用。
+>
+> （原文写于 2026-09-27 更名之前, 当时产品名叫 CVP。）
 
 `2.2.0` 的 `render` 只公布九个方形(512²…1024²), 客户端要一张 9:16 竖幅只能拿到方图。根因是**画幅被写成了手写清单**。
 
@@ -304,7 +317,7 @@ P1–P5 都在本机完成并可离线自检; P6 通过后才首次触碰设备,
 - `node tools/verify.mjs --source-only` ✅ —— `providers.test.mjs`(含新的成对断言) / `workspace` / `performance` / `assets` 四套全 ok, 24 个运行期文件;
 - **`tools/package.py --check` 会红**(`release content mismatch: app/components/settings.js`)—— 这条门禁要求发布包与源码逐字节一致, 而按既定纪律**改代码不发版**: 不升 happ 版本、不生成新的 happ 发布包(见 §3.2)。所以它保持在"等下一次发版"的状态, 不是回归;
 - 插件侧离线测试 `python3 comfyui-plugin/tests/test_spec.py` ✅(`ok (4 个能力,1 份输入 schema,1 条翻译记忆,旧文档 4 条插件)`);
-- A1X 部署: 备份到 `custom_nodes/hamdraw_comfy/.bak-20260927/` → 传 6 个文件 → 设备设置 `families.qwen_image_21.reference_edge = "512"` → `systemctl --user restart minimax-h3-comfy` → `curl --noproxy '*' http://192.168.124.31:8189/cvp/info` 验收 `plugin.version 2.3.0` / `render.needs.image=false` / `render` 含 `[768,1344]` / 四个能力都有 `size_domain`;
+- A1X 部署: 备份到 `custom_nodes/hamdraw_comfy/.bak-20260927/`  ← 当时目录还叫 hamdraw_comfy → 传 6 个文件 → 设备设置 `families.qwen_image_21.reference_edge = "512"` → `systemctl --user restart minimax-h3-comfy` → `curl --noproxy '*' http://192.168.124.31:8189/chp/info` 验收 `plugin.version 2.3.0` / `render.needs.image=false` / `render` 含 `[768,1344]` / 四个能力都有 `size_domain`;
 - 应用热更新: `sync-dir` → HamDraw devRev **181 → 182**, `commitState: committed`; 回读设备端 `app/components/settings.js` 确认 `data-aspect-width` / `data-aspect-height` 在场且写死的 `<strong>1:1</strong>` 已消失。
 
 ### 5.7 参考图被压扁：`ImageScale` 是强制拉伸, 参考图只能按面积缩（2026-09-27 第六批）
@@ -323,7 +336,7 @@ P1–P5 都在本机完成并可离线自检; P6 通过后才首次触碰设备,
 - A1X 上实测该节点可用: `/object_info/ImageScaleToTotalPixels` 的 `required = [image, megapixels, resolution_steps, upscale_method]`,`megapixels` FLOAT 0.01–16,`resolution_steps` INT 1–256; 容器内源码确认它走 `common_upscale(..., "disabled")`。
 - 数值自洽: 9:16 参考图 + `resolution=512` ⇒ 384×672, 与画幅 768×1344 同比例; `resolution=1024` ⇒ 768×1344, **恰好等于画幅**。
 - 离线测试同步: `tests/test_spec.py` 的 `check_render_accepts_no_reference` 改成断言节点 "11" 的 `class_type == "ImageScaleToTotalPixels"` / `megapixels == reference_megapixels(512)` / `resolution_steps == 32`。
-- A1X 部署: 备份 `.bak-20260927b/`（含设置文件）→ 传 `families/graph.py` 与 `families/qwen_image.py` → 清 `__pycache__` → `systemctl --user restart minimax-h3-comfy` → `/cvp/info` 复验。设备设置 `reference_edge` 同时由 `512` 提到 `1024`（业主直接定, 代价是参考图 latent token 约 4×, 且已有的 0.59MP 定妆照会被放大到约 1MP 预算 —— 要吃满 1MP 得同时把定妆照提到 768×1344 并改走 `bodyLogicalFileId` 传输）。
+- A1X 部署: 备份 `.bak-20260927b/`（含设置文件）→ 传 `families/graph.py` 与 `families/qwen_image.py` → 清 `__pycache__` → `systemctl --user restart minimax-h3-comfy` → `/chp/info` 复验。设备设置 `reference_edge` 同时由 `512` 提到 `1024`（业主直接定, 代价是参考图 latent token 约 4×, 且已有的 0.59MP 定妆照会被放大到约 1MP 预算 —— 要吃满 1MP 得同时把定妆照提到 768×1344 并改走 `bodyLogicalFileId` 传输）。
 
 ### 5.6 回滚
 
