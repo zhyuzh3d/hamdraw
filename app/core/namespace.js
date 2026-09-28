@@ -4,7 +4,7 @@
   var app = global.hamdraw = global.hamdraw || {};
   var listeners = {};
 
-  app.version = "0.5.13";
+  app.version = "0.5.14";
   app.events = {
     on: function (name, listener) {
       listeners[name] = listeners[name] || [];

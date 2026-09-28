@@ -4,8 +4,8 @@
   "name": "HamDraw",
   "author": "zhyuzh",
   "version": {
-    "code": 89,
-    "name": "0.5.13"
+    "code": 90,
+    "name": "0.5.14"
   },
   "entry": "index.html",
   "routing": "hash",

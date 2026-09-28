@@ -2,11 +2,12 @@
 """Publish the archived HamDraw brand artwork as the application icon.
 
 `docs/assets/hamdraw-icon-source.png` is the artwork exactly as designed: the
-brand magenta field with the white italic V sitting off-centre to the right.
-That placement is the design, so this tool is a faithful transcode and nothing
-else - it never re-centres, rescales or recomposes the mark. It exists so the
-APK icon, the website icon and the happ package icon are all rendered from one
-committed source instead of drifting as three separate exports.
+brand magenta field with the lowercase "ham draw" wordmark set in white, stacked
+on two lines and sitting left of centre. That placement is the design, so this
+tool is a faithful transcode and nothing else - it never re-centres, rescales or
+recomposes the mark. It exists so the APK icon, the website icon and the happ
+package icon are all rendered from one committed source instead of drifting as
+three separate exports.
 
 Output is lossless WebP at the artwork's own resolution.
 
