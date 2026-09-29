@@ -1,8 +1,8 @@
 """Nodes for the HamDraw ComfyUI plugin.
 
 ``HamDrawConfig`` is the one node a user has to touch: it stores the shared
-password, the checkpoint each capability uses, the three files the ``render``
-capability needs (a diffusion model, a text encoder and a VAE), and the address
+password, the checkpoint each category uses, the three files the ``render``
+category needs (a diffusion model, a text encoder and a VAE), and the address
 of the translator.  Queueing it once writes ``hamdraw_settings.json`` next to
 the plugin, so the HTTP API picks the values up immediately without restarting
 ComfyUI.
@@ -25,12 +25,12 @@ import nodes
 from . import capabilities as capabilities_module
 from . import settings as settings_module
 
-SAME_AS_QUICK = "(same as quick)"
+SAME_AS_FAST = "(same as fast)"
 
-#: Taken from the capability table rather than written out again, so the range
+#: Taken from the category table rather than written out again, so the range
 #: the node shows is the range the HTTP layer accepts.
 REFERENCE_LOW, REFERENCE_HIGH = capabilities_module.REF_STRENGTH_RANGE
-REFERENCE_DEFAULT = float(capabilities_module.CAPABILITIES["quick"]["defaults"]["ref_strength"])
+REFERENCE_DEFAULT = float(capabilities_module.CATEGORY_TABLE["fast"]["defaults"]["ref_strength"])
 
 
 def _checkpoint_choices() -> list[str]:
@@ -46,20 +46,20 @@ def _folder_choices(folder: str) -> list[str]:
 
 def _choice_list() -> list[str]:
     choices = _checkpoint_choices()
-    return [SAME_AS_QUICK] + choices if choices else [SAME_AS_QUICK]
+    return [SAME_AS_FAST] + choices if choices else [SAME_AS_FAST]
 
 
-def _quick_default(choices: list[str]) -> str:
-    available = [name for name in choices if name != SAME_AS_QUICK]
+def _fast_default(choices: list[str]) -> str:
+    available = [name for name in choices if name != SAME_AS_FAST]
     recommended = settings_module.RECOMMENDED_CHECKPOINT
     if recommended in available:
         return recommended
-    return available[0] if available else SAME_AS_QUICK
+    return available[0] if available else SAME_AS_FAST
 
 
 def _resolve(value: str) -> str:
     text = str(value or "").strip()
-    return "" if text == SAME_AS_QUICK else text
+    return "" if text == SAME_AS_FAST else text
 
 
 class HamDrawConfig:
@@ -71,14 +71,14 @@ class HamDrawConfig:
         stored = settings_module.load()
         translation = settings_module.translate()
         render = settings_module.model_files("render")
-        quick_choices = [name for name in choices if name != SAME_AS_QUICK]
-        stored_quick = str(stored["checkpoints"].get("quick") or "").strip()
+        fast_choices = [name for name in choices if name != SAME_AS_FAST]
+        stored_fast = str(stored["checkpoints"].get("fast") or "").strip()
         return {
             "required": {
                 "password": ("STRING", {"default": str(stored.get("password") or ""), "multiline": False}),
-                "quick_checkpoint": (quick_choices or [SAME_AS_QUICK], {"default": stored_quick or _quick_default(choices)}),
-                "inpaint_checkpoint": (choices, {"default": _resolve(stored["checkpoints"].get("inpaint", "")) or SAME_AS_QUICK}),
-                "upscale_checkpoint": (choices, {"default": _resolve(stored["checkpoints"].get("upscale", "")) or SAME_AS_QUICK}),
+                "fast_checkpoint": (fast_choices or [SAME_AS_FAST], {"default": stored_fast or _fast_default(choices)}),
+                "inpaint_checkpoint": (choices, {"default": _resolve(stored["checkpoints"].get("inpaint", "")) or SAME_AS_FAST}),
+                "upscale_checkpoint": (choices, {"default": _resolve(stored["checkpoints"].get("upscale", "")) or SAME_AS_FAST}),
             },
             # Optional so a graph saved before translation existed still loads.
             # The render triple lives here for the same reason: it is a second
@@ -104,14 +104,14 @@ class HamDrawConfig:
         "The translator turns a prompt a text encoder cannot read into English; it runs when a job is submitted, "
         "so a client that sends Chinese still gets a picture. Leave its address empty to switch it off. "
         "The three model fields below configure 高质量生图 (render), which needs a diffusion model, a text encoder "
-        "and a VAE instead of one checkpoint; all three must be set before that capability can run."
+        "and a VAE instead of one checkpoint; all three must be set before that category can run."
     )
     OUTPUT_NODE = True
 
     def apply(
         self,
         password: str,
-        quick_checkpoint: str,
+        fast_checkpoint: str,
         inpaint_checkpoint: str,
         upscale_checkpoint: str,
         translate_prompts: bool | None = None,
@@ -123,7 +123,7 @@ class HamDrawConfig:
         patch: dict[str, Any] = {
             "password": str(password or ""),
             "checkpoints": {
-                "quick": str(quick_checkpoint or "").strip(),
+                "fast": str(fast_checkpoint or "").strip(),
                 "inpaint": _resolve(inpaint_checkpoint),
                 "upscale": _resolve(upscale_checkpoint),
             },
@@ -159,18 +159,21 @@ class HamDrawConfig:
         if translation["enabled"]:
             translating = f"中文自动译英 → {translation['url']}"
         else:
-            translating = "翻译已关闭，需要英文提示词的能力将收到原文"
+            translating = "翻译已关闭，需要英文提示词的类别将收到原文"
         render_state = settings_module.model_files("render")
         render_text = render_state.get("unet") if all(render_state.values()) else "未选"
-        return (f"HamDraw 设置已保存 · 快速 {saved['checkpoints']['quick'] or '未选'} · 高质量 {render_text} · {translating} · {protection}",)
+        return (f"CHP 插件设置已保存 · 快速 {saved['checkpoints']['fast'] or '未选'} · 高质量 {render_text} · {translating} · {protection}",)
 
 
 class HamDrawInput:
     """The semantic inputs a HamDraw graph starts from, as an ordinary node.
 
-    The ranges come from the capability table, so what this node shows is what
-    the HTTP layer accepts — they used to be written out here as well, and had
-    drifted (0–2.0 against a contract of 0.05–0.95).
+    A peeking node, not part of the HTTP contract: the graphs the API runs are
+    built by :mod:`hamdraw_chp.families` and do not route through this class, so
+    its widgets are free to be plain controls.  ``ref_strength`` is the one that
+    must not drift — it is the same knob the contract fixes, so its bounds are
+    read from the category table rather than written out here again (they had
+    drifted, 0–2.0 against a contract of 0.05–0.95).
     """
 
     @classmethod

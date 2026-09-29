@@ -1,51 +1,55 @@
-"""The CHP capability table, and the one document that describes it.
+"""The CHP category table, and the one document that describes it.
 
 This module is the single source of truth for *what this server can do*.  The
-HTTP layer, the config node and the offline tests all read it; adding a
-capability here makes it appear in the discovery document, in the config node's
-validation, and to every client, with no second table to forget.
+HTTP layer, the config node and the offline tests all read it; adding a category
+here makes it appear in the discovery document, in the config node's validation,
+and to every client, with no second table to forget.
 
-Three ideas hold it together:
+Four ideas hold it together:
 
-* **A capability declares a contract, not an implementation.**  ``values`` and
-  ``defaults`` narrow what a client may send; which model runs behind it is the
-  ``roles`` / ``family`` pair, and nothing outside ``families/`` reads those.
-* **One signature shares one schema.**  Every ``txt-ref2img`` capability sends
-  the same field names with the same meanings; only the allowed values differ.
-  That is why a client writes its form once and can call all of them.
-* **Capability ids are semantic.**  ``render``, not ``qwen``: swapping the model
-  behind a capability must never change its id.  ``aliases`` exist only to keep
-  a client that was written against an older name working.
+* **A category declares a contract, not an implementation.**  ``needs`` /
+  ``prompt`` / ``defaults`` narrow what a client may send and are published;
+  which model runs behind it is the ``roles`` / ``family`` pair, and those are
+  not.
+* **The document is two tables, not one.**  ``rules`` says what shape of input a
+  category takes; ``abilities`` says which files can run it and which canvases
+  it can produce.  A category is a thing a client *asks for*; an ability is a
+  thing that *answers*, and one ability may answer for several categories.
+* **IO rules are spelled out once.**  ``txt-ref-2-img`` is split on its literal
+  ``-2-``, and the signature and the schema key are *derived* from the modality
+  list — so a rule's spelling has one source, and four categories cannot each
+  drift from it by hand.
+* **Canvases are a hand-written table** (:data:`FRAMES`), and the order in it is
+  part of the contract: the first frame of a category is that category's
+  default.  Nothing computes a canvas, so nothing can compute a different one
+  than the client was offered.
 
 The meanings of the fields themselves live in :data:`INPUT_SCHEMAS` and in
-``plans/chp-spec.md``; nothing here may invent a per-capability meaning for a
+``plans/chp-spec.md``; nothing here may invent a per-category meaning for a
 shared field.
 """
 
 from __future__ import annotations
 
 import json
-import math
 from copy import deepcopy
 from typing import Any, Callable
 
 from .version import __version__
 
 #: The protocol version.  It is reported in the document and never in a path —
-#: see the spec's principle 2.
-SPEC = "chp/1"
+#: see the spec's principle 2.  A client that does not recognise it must say so
+#: rather than guess, because this version promises nothing about the last one.
+SPEC = "chp/2"
 
 API_ROOT = "/chp"
-#: The previous primary root.  It answered — and still answers — the *same*
-#: document shapes as :data:`API_ROOT`, so it is an alias, not a legacy
-#: projection: a client that hardcoded ``/cvp`` keeps working untouched.
-ALIAS_ROOTS: tuple[str, ...] = ("/cvp",)
 
 PLUGIN_ID = "hamdraw_chp"
-PLUGIN_LABEL = {"zh": "ComfyUI HamDraw 插件 CHP", "en": "ComfyUI Hamdraw Plugin CHP"}
+PLUGIN_LABEL = {"zh": "CHP 插件（ComfyUI Haminn Protocol）",
+                "en": "CHP plugin (ComfyUI Haminn Protocol)"}
 
 #: The relative paths a client should use.  Given here so a client never has to
-#: assemble one itself.
+#: assemble one itself — reading them is a rule, not a courtesy.
 ENDPOINTS: dict[str, str] = {
     "info": f"{API_ROOT}/info",
     "jobs": f"{API_ROOT}/jobs",
@@ -56,106 +60,85 @@ ENDPOINTS: dict[str, str] = {
     "translate": f"{API_ROOT}/translate",
 }
 
-#: Functional classes.  An open set: a client must ignore one it does not know.
-CATEGORIES = {
-    "realtime": {"zh": "实时出图, 适合边画边看", "en": "Answers in a second or two; good while drawing"},
-    "edit": {"zh": "在已有画面上做局部修改", "en": "Changes part of an existing picture"},
-    "upscale": {"zh": "放大并补细节, 尽量不改构图", "en": "Enlarges and adds detail, keeping the composition"},
-    "render": {"zh": "重画成成品图", "en": "Repaints the canvas into a finished picture"},
+#: The IO rule table.  Two rules, and their modalities are written in the
+#: canonical order (``txt`` first, ``ref`` last) so a rule name can be compared
+#: as a string instead of being parsed.
+#:
+#: Nothing else spells a rule out: :func:`signature_of` and :func:`input_of`
+#: derive everything a client reads from the modality list below.
+RULES: dict[str, dict[str, Any]] = {
+    "txt-ref-2-img": {"modalities": ("txt", "ref"), "output": "img"},
+    "txt-msk-ref-2-img": {"modalities": ("txt", "msk", "ref"), "output": "img"},
 }
 
-#: The domain of ``ref_strength``, everywhere, for every capability.  It is a
+
+def signature_of(rule: str) -> str:
+    """``txt-ref-2-img`` — the modality list joined by the rule's own separator."""
+    entry = RULES[str(rule)]
+    return "-".join((*entry["modalities"], "2", entry["output"]))
+
+
+def input_of(rule: str) -> str:
+    """The shared schema key a rule uses: one rule, one schema, one spelling."""
+    return f"{rule}/v1"
+
+
+#: The domain of ``ref_strength``, everywhere, for every category.  It is a
 #: direction ("higher = closer to the reference"), not a mechanism: one family
 #: implements it as a denoise floor, another by softening the reference, and
 #: both are compliant.  Out-of-range values are clamped, not rejected.
 REF_STRENGTH_RANGE = (0.05, 0.95)
-GROW_MASK_RANGE = (0, 64)
 
-#: 画幅不是一张手写清单，而是一条**模型约束**。每个能力用 ``size`` 声明自己的：
+#: 画幅：**手写的表，顺序就是规范的一部分**。
 #:
-#: * ``step``            —— 模型要求的对齐步长（latent 8× × VAE 8×，取 64 是安全上界）
-#: * ``min_short_edge``  —— 允许的最短边
-#: * ``max_long_edge``   —— 允许的最长边
-#: * ``max_pixels``      —— 一次生成允许的像素预算
-#: * ``budgets``         —— 推荐枚举要覆盖的几个预算（比如放大目标的 1MP / 4MP 两档）
-#: * ``aspects``         —— 模型能接受的比例
+#: 每个类别下面按序排 `ratio` → 该比例下的分辨率；某个类别的默认画幅就是它的第一档。
+#: 没有"域"，没有"域内自己算一张"—— 这张表就是全部合法值，校验是成员检查。业主定稿：
+#: 客户端**只选不算**，所以服务端也不该允许它算出来的东西。
 #:
-#: 广播给客户端的 ``values.size`` 由这份约束**算出来**（:func:`sizes`），校验也按它判
-#: （:func:`fits`）。两件事用同一个来源，所以清单外但合法的画幅不会被拒 —— 这正是
-#: "不锁定具体分辨率" 的意思：插件给菜单，客户端按自己的需要取。
-SIZE_STEP = 64
-
-
-def _aligned_down(value: float, step: int, floor: int) -> int:
-    """向下取到 ``step`` 的倍数，且不低于 ``floor``。"""
-    step = max(1, int(step))
-    return max(int(floor), int(value // step) * step)
-
-
-def sizes(capability: dict[str, Any]) -> list[list[int]]:
-    """这张能力推荐的画幅枚举 —— 由模型约束算出来，不是手写的。
-
-    每个 (比例 × 预算) 出两张边，各自取 ``sqrt(预算 × 自己的份额)`` 再向下对齐。两边都
-    向下取整，所以乘积一定不超过预算，而比例就是声明里那个 —— 9:16 在 1MP 预算下正好
-    是 768 × 1344。
-    """
-    domain = capability.get("size") or {}
-    step = int(domain.get("step") or SIZE_STEP)
-    short = int(domain.get("min_short_edge") or step)
-    long_edge = int(domain.get("max_long_edge") or 0)
-    aspects = domain.get("aspects") or [[1, 1]]
-    out: list[list[int]] = []
-    for budget in domain.get("budgets") or []:
-        for aspect in aspects:
-            width_share, height_share = int(aspect[0]), int(aspect[1])
-            width = _aligned_down(math.sqrt(budget * width_share / height_share), step, short)
-            height = _aligned_down(math.sqrt(budget * height_share / width_share), step, short)
-            if long_edge and max(width, height) > long_edge:
-                factor = long_edge / max(width, height)
-                width = _aligned_down(width * factor, step, step)
-                height = _aligned_down(height * factor, step, step)
-            pair = [width, height]
-            if pair not in out:
-                out.append(pair)
-    return out
-
-
-def fits(size: Any, domain: dict[str, Any]) -> bool:
-    """这个画幅在模型的能力范围内吗 —— 认约束，不认清单。"""
-    if not isinstance(size, (list, tuple)) or len(size) < 2:
-        return False
-    try:
-        width, height = int(size[0]), int(size[1])
-    except (TypeError, ValueError):
-        return False
-    if width <= 0 or height <= 0:
-        return False
-    step = int(domain.get("step") or SIZE_STEP)
-    if width % step or height % step:
-        return False
-    if min(width, height) < int(domain.get("min_short_edge") or step):
-        return False
-    long_edge = int(domain.get("max_long_edge") or 0)
-    if long_edge and max(width, height) > long_edge:
-        return False
-    budget = int(domain.get("max_pixels") or 0)
-    if budget and width * height > budget:
-        return False
-    return True
-
-
-def values(capability: dict[str, Any]) -> dict[str, Any]:
-    """广播出去的那一份 ``values``：画幅是算出来的，步数照样是枚举。"""
-    return {"size": sizes(capability), "steps": list(capability["values"]["steps"])}
+#: `ratio` 是**标签**，不由数字反推：`768 × 1344` 的精确比是 4:7，叫它 9:16 是作者
+#: 定的类目名（和相机的画幅档位一个道理）。
+FRAMES: dict[str, list[dict[str, Any]]] = {
+    "fast": [
+        {"ratio": "1:1", "resolution": ["512x512"]},
+        {"ratio": "4:3", "resolution": ["576x384"]},
+        {"ratio": "3:4", "resolution": ["384x576"]},
+    ],
+    "inpaint": [
+        # 与 fast 共用一族 checkpoint，蒙版必须与画布同尺寸，所以画幅表也一样。
+        {"ratio": "1:1", "resolution": ["512x512"]},
+        {"ratio": "4:3", "resolution": ["576x384"]},
+        {"ratio": "3:4", "resolution": ["384x576"]},
+    ],
+    # 放大**只列 1:1**：三个客户端发过来的都是 1:1，所以今天不损失任何东西。
+    # 真要放大竖幅就往这张表里加一档（例如 9:16 ["576x1024", "1152x2048"]）——
+    # 加一档就是全部工作量，因为校验、默认值、菜单都只读这张表。
+    "upscale": [
+        {"ratio": "1:1", "resolution": ["1024x1024", "2048x2048"]},
+    ],
+    "render": [
+        {"ratio": "1:1", "resolution": ["1024x1024"]},
+        {"ratio": "9:16", "resolution": ["768x1344"]},
+        {"ratio": "16:9", "resolution": ["1344x768"]},
+        {"ratio": "3:4", "resolution": ["832x1152"]},
+        {"ratio": "4:3", "resolution": ["1152x832"]},
+        {"ratio": "2:3", "resolution": ["832x1216"]},
+        {"ratio": "3:2", "resolution": ["1216x832"]},
+        {"ratio": "21:9", "resolution": ["1536x640"]},
+    ],
+}
 
 _FIELD_HELP = {
-    "prompt": {
-        "zh": "画面描述。是否需要先译成英文由能力的 prompt.language 决定。",
-        "en": "What to draw. Whether it must be English first is the capability's prompt.language.",
+    "category": {
+        "zh": "要哪个功能场景。取值见信息文档的 rules。",
+        "en": "Which functional scenario. The information document's rules list them.",
     },
-    "negative_prompt": {
-        "zh": "不想出现的内容。能力若声明忽略它, 发了也不生效。",
-        "en": "What to avoid. A capability that declares it ignored will not act on it.",
+    "resolution": {
+        "zh": "输出分辨率, 写成 \"宽x高\"(如 \"768x1344\")。只能取该类别帧表里列出的值; 省略取该类别第一档。",
+        "en": "Output resolution as \"WxH\" (e.g. \"768x1344\"). Only the values in that category's frames; omitted takes the first.",
+    },
+    "prompt": {
+        "zh": "画面描述。是否需要先译成英文由 rules[].prompt.language 决定。",
+        "en": "What to draw. Whether it must be English first is the rule's prompt.language.",
     },
     "image_base64": {
         "zh": "参考图, PNG/JPEG 的 base64, 可直接给 data URL。",
@@ -165,14 +148,6 @@ _FIELD_HELP = {
         "zh": "蒙版, 黑底白区, 白色 = 要重画。",
         "en": "Mask, black background with a white area; white means repaint.",
     },
-    "size": {
-        "zh": "输出画幅 [宽, 高]。要满足本能力 size 域的对齐步长与像素预算; values.size 是推荐枚举, 不是唯一可选值。",
-        "en": "Output canvas [width, height]; it must fit this capability's size domain (alignment step and pixel budget). values.size is the recommended menu, not the only legal values.",
-    },
-    "steps": {
-        "zh": "采样步数。只能取本能力 values.steps 里列出的值。",
-        "en": "Sampling steps; only the values in this capability's values.steps.",
-    },
     "seed": {
         "zh": "0 表示每张都不一样; 同一个值可以复现。",
         "en": "0 means a new seed each run; the same value reproduces.",
@@ -181,82 +156,91 @@ _FIELD_HELP = {
         "zh": "0.05–0.95, 越大越贴近参考图, 越低越放手重画。越界会被夹到边界。",
         "en": "0.05–0.95. Higher stays closer to the reference, lower redraws more freely. Out of range is clamped.",
     },
-    "grow_mask_by": {
-        "zh": "把重画范围向外扩几个像素, 接缝更自然。0–64。",
-        "en": "Grow the repaint area by a few pixels so the seam blends. 0–64.",
+    "ext_params": {
+        "zh": "模型层的扩展参数, 原样携带、原样回显。规范不定义任何字段。",
+        "en": "Model-layer extension parameters, carried and echoed verbatim. The spec defines no field in it.",
+    },
+    "chp_params": {
+        "zh": "CHP 层的扩展参数。目前只有 password。",
+        "en": "CHP-layer extension parameters. Today only password.",
     },
 }
 
-#: The request body shared by every ``txt-ref2img`` capability — declared once,
-#: not once per capability.  JSON-Schema-shaped, plus three documentation keys
-#: (``title`` / ``help`` / ``recommended``) that a validator ignores.
-INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
-    "txt-ref2img/v1": {
-        "type": "object",
-        "required": ["capability"],
-        "properties": {
-            "capability": {
-                "type": "string",
-                "title": {"zh": "能力", "en": "Capability"},
-                "help": {"zh": "能力 id, 或它的别名。", "en": "A capability id, or one of its aliases."},
-            },
-            "prompt": {
-                "type": "string", "default": "", "recommended": True,
-                "title": {"zh": "提示词", "en": "Prompt"}, "help": _FIELD_HELP["prompt"],
-            },
-            "negative_prompt": {
-                "type": "string", "default": "",
-                "title": {"zh": "反向提示词", "en": "Negative prompt"}, "help": _FIELD_HELP["negative_prompt"],
-            },
-            "image_base64": {
-                "type": "string", "format": "base64-image",
-                "title": {"zh": "参考图", "en": "Reference"}, "help": _FIELD_HELP["image_base64"],
-            },
-            "mask_base64": {
-                "type": "string", "format": "base64-image",
-                "title": {"zh": "蒙版", "en": "Mask"}, "help": _FIELD_HELP["mask_base64"],
-            },
-            "size": {
-                "type": "array", "items": "integer", "length": 2,
-                "title": {"zh": "画幅", "en": "Canvas"}, "help": _FIELD_HELP["size"],
-            },
-            "steps": {
-                "type": "integer",
-                "title": {"zh": "步数", "en": "Steps"}, "help": _FIELD_HELP["steps"],
-            },
-            "seed": {
-                "type": "integer", "minimum": 0, "default": 0,
-                "title": {"zh": "随机种子", "en": "Seed"}, "help": _FIELD_HELP["seed"],
-            },
-            "ref_strength": {
-                "type": "number", "minimum": REF_STRENGTH_RANGE[0], "maximum": REF_STRENGTH_RANGE[1],
-                "title": {"zh": "参考图权重", "en": "Reference influence"}, "help": _FIELD_HELP["ref_strength"],
-            },
-            "grow_mask_by": {
-                "type": "integer", "minimum": GROW_MASK_RANGE[0], "maximum": GROW_MASK_RANGE[1],
-                "title": {"zh": "蒙版外扩", "en": "Mask grow"}, "help": _FIELD_HELP["grow_mask_by"],
-            },
+#: The request body every category shares, written once.  A rule whose modalities
+#: include ``msk`` additionally requires ``mask_base64``; that second schema is
+#: *generated* from this one rather than typed out, so the two can never drift.
+_BASE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["category"],
+    "properties": {
+        "category": {
+            "type": "string",
+            "title": {"zh": "场景", "en": "Category"},
+            "help": _FIELD_HELP["category"],
         },
-    }
+        "resolution": {
+            "type": "string", "pattern": r"^\d+x\d+$",
+            "title": {"zh": "分辨率", "en": "Resolution"}, "help": _FIELD_HELP["resolution"],
+        },
+        "prompt": {
+            "type": "string", "default": "",
+            "title": {"zh": "提示词", "en": "Prompt"}, "help": _FIELD_HELP["prompt"],
+        },
+        "seed": {
+            "type": "integer", "minimum": 0, "default": 0, "recommended": True,
+            "title": {"zh": "随机种子", "en": "Seed"}, "help": _FIELD_HELP["seed"],
+        },
+        "ref_strength": {
+            "type": "number", "minimum": REF_STRENGTH_RANGE[0], "maximum": REF_STRENGTH_RANGE[1],
+            "title": {"zh": "参考图权重", "en": "Reference influence"}, "help": _FIELD_HELP["ref_strength"],
+        },
+        "image_base64": {
+            "type": "string", "format": "base64-image",
+            "title": {"zh": "参考图", "en": "Reference"}, "help": _FIELD_HELP["image_base64"],
+        },
+        "mask_base64": {
+            "type": "string", "format": "base64-image",
+            "title": {"zh": "蒙版", "en": "Mask"}, "help": _FIELD_HELP["mask_base64"],
+        },
+        "ext_params": {
+            "type": "object", "additionalProperties": True, "default": {},
+            "title": {"zh": "模型扩展参数", "en": "Model extensions"}, "help": _FIELD_HELP["ext_params"],
+        },
+        "chp_params": {
+            "type": "object", "additionalProperties": True, "default": {},
+            "title": {"zh": "CHP 扩展参数", "en": "CHP extensions"}, "help": _FIELD_HELP["chp_params"],
+        },
+    },
 }
 
-SIGNATURE = "txt-ref2img"
-INPUT_SCHEMA = "txt-ref2img/v1"
-IMAGE_OUTPUT = {"modality": "img", "media_type": "image/png", "delivery": "url"}
 
-#: The capability table.
+def _masked(schema: dict[str, Any]) -> dict[str, Any]:
+    """The same schema, with ``mask_base64`` required as well.
+
+    A copy, not a second literal: "write the client once and it calls every
+    rule" is the point of sharing a schema, and that promise dies the moment a
+    second one is typed out by hand.
+    """
+    copy = deepcopy(schema)
+    copy["required"] = [*schema["required"], "mask_base64"]
+    return copy
+
+
+INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
+    input_of(rule): (_masked(_BASE_SCHEMA) if "msk" in entry["modalities"] else deepcopy(_BASE_SCHEMA))
+    for rule, entry in RULES.items()
+}
+
+#: The category table: one entry per scenario a client can ask for.
 #:
-#: ``roles`` and ``family`` are implementation: the first says which model slots
-#: must be configured, the second says which module under ``families/`` builds
-#: the graph.  Nothing else reads them, and they are not published.
-CAPABILITIES: dict[str, dict[str, Any]] = {
-    "quick": {
-        "id": "quick",
-        "aliases": [],
-        "category": ["realtime"],
-        "signature": SIGNATURE,
-        "input": INPUT_SCHEMA,
-        "output": IMAGE_OUTPUT,
+#: ``roles`` / ``family`` / ``steps`` are **implementation** and are not
+#: published — the first says which model slots must be configured, the second
+#: says which module under ``families/`` builds the graph, and the third is this
+#: implementation's own enumeration for the ``step`` extension parameter.
+CATEGORY_TABLE: dict[str, dict[str, Any]] = {
+    "fast": {
+        "category": "fast",
+        "rule": "txt-ref-2-img",
         "label": {"zh": "快速生图", "en": "Quick draw"},
         "description": {
             "zh": "把画布当作参考图重绘一张 512 × 512 的速写稿。",
@@ -264,25 +248,15 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
         },
         "prompt": {"language": "en"},
         "needs": {"prompt": True, "image": True, "mask": False},
-        "ignores": [],
-        "values": {"steps": [2, 4, 6, 8]},
-        "size": {
-            # SD1.5 系 checkpoint 训练在 512², 预算就按 512² 给; 再大不会报错, 只会糊。
-            "step": 64, "min_short_edge": 256, "max_long_edge": 768, "max_pixels": 262144,
-            "budgets": [262144], "aspects": [[1, 1], [4, 3], [3, 4]],
-        },
-        "defaults": {"size": [512, 512], "steps": 8, "ref_strength": 0.55},
+        "defaults": {"ref_strength": 0.55},
+        "typical_seconds": 1.2,
         "roles": ["checkpoint"],
         "family": "checkpoint",
-        "typical_seconds": 1.2,
+        "steps": {"values": (2, 4, 6, 8), "default": 8},
     },
     "inpaint": {
-        "id": "inpaint",
-        "aliases": [],
-        "category": ["edit"],
-        "signature": SIGNATURE,
-        "input": INPUT_SCHEMA,
-        "output": IMAGE_OUTPUT,
+        "category": "inpaint",
+        "rule": "txt-msk-ref-2-img",
         "label": {"zh": "局部重绘", "en": "Local redraw"},
         "description": {
             "zh": "只重画白色蒙版覆盖的区域, 其余部分原样保留。",
@@ -290,25 +264,15 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
         },
         "prompt": {"language": "en"},
         "needs": {"prompt": True, "image": True, "mask": True},
-        "ignores": [],
-        "values": {"steps": [4, 6, 8, 12]},
-        "size": {
-            # 局部重绘与速写共用一个 checkpoint, 蒙版必须与画布同尺寸, 域完全一致。
-            "step": 64, "min_short_edge": 256, "max_long_edge": 768, "max_pixels": 262144,
-            "budgets": [262144], "aspects": [[1, 1], [4, 3], [3, 4]],
-        },
-        "defaults": {"size": [512, 512], "steps": 6, "ref_strength": 0.30, "grow_mask_by": 8},
+        "defaults": {"ref_strength": 0.30},
+        "typical_seconds": 2.6,
         "roles": ["checkpoint"],
         "family": "checkpoint",
-        "typical_seconds": 2.6,
+        "steps": {"values": (4, 6, 8, 12), "default": 6},
     },
     "upscale": {
-        "id": "upscale",
-        "aliases": [],
-        "category": ["upscale"],
-        "signature": SIGNATURE,
-        "input": INPUT_SCHEMA,
-        "output": IMAGE_OUTPUT,
+        "category": "upscale",
+        "rule": "txt-ref-2-img",
         "label": {"zh": "图像放大", "en": "Upscale"},
         "description": {
             "zh": "把画布放大到 1024 或 2048 并补细节。",
@@ -316,54 +280,30 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
         },
         "prompt": {"language": "en"},
         "needs": {"prompt": True, "image": True, "mask": False},
-        "ignores": [],
-        "values": {"steps": [4, 8, 12, 16, 20]},
-        "size": {
-            # 放大这里"模型"给不出上限, 给上限的是显存, 所以域照设备自己公布的口径来:
-            # 长边 ≤ 2560、像素 ≤ 2048²。两个预算就是原来那两个档位(1MP / 4MP),
-            # 算出来的枚举与手写的那两张完全一样; 比例只列 1:1 —— 放大目标跟随源图比例,
-            # 客户端要 9:16 这类画幅直接发, 校验认的是约束不是这张菜单。
-            "step": 64, "min_short_edge": 512, "max_long_edge": 2560, "max_pixels": 4194304,
-            "budgets": [1048576, 4194304], "aspects": [[1, 1]],
-        },
-        "defaults": {"size": [1024, 1024], "steps": 8, "ref_strength": 0.75},
+        "defaults": {"ref_strength": 0.75},
+        "typical_seconds": 6.0,
         "roles": ["checkpoint"],
         "family": "checkpoint",
-        "typical_seconds": 6.0,
+        "steps": {"values": (4, 8, 12, 16, 20), "default": 8},
     },
     "render": {
-        "id": "render",
-        "aliases": ["qwen"],
-        "category": ["render"],
-        "signature": SIGNATURE,
-        "input": INPUT_SCHEMA,
-        "output": IMAGE_OUTPUT,
+        "category": "render",
+        "rule": "txt-ref-2-img",
         "label": {"zh": "高质量生图", "en": "High quality render"},
         "description": {
             "zh": "重画成一张 1024 以内的成品图。比速写模型重得多, 单张要几十秒。",
             "en": "Repaint the canvas into a finished picture up to 1024 px. Far heavier than a sketch model.",
         },
         "prompt": {"language": "any"},
-        # 带参考图就是参考图编辑, 不带就是纯文生图 —— 同一个能力的两种用法, 不是两个能力。
-        # 底层 TextEncodeQwenImage21 的 images 输入 min=0, 所以"没有参考图"是它明确支持的
-        # 路径 (这也正是它第三个输出的空 latent 会用 resolution 兜底的原因)。
+        # 带参考图就是参考图编辑, 不带就是纯文生图 —— 同一个类别的两种用法，
+        # 不是两个类别。底层 TextEncodeQwenImage21 的 images 输入 min=0，所以
+        # "没有参考图"是它明确支持的路径。
         "needs": {"prompt": True, "image": False, "mask": False},
-        # Sampled at cfg 1: there is nothing to steer away from, so the field is
-        # declared ignored rather than quietly accepted and dropped.
-        "ignores": ["negative_prompt"],
-        "values": {"steps": [12, 16, 20, 25, 30, 40]},
-        "size": {
-            # Qwen-Image 2.1 出图按像素预算走, 1MP 也就是它自己的原生档:
-            # 9:16 落在 768 × 1344 (1 032 192 px)。比例列的是模型能接受的那些,
-            # 21:9 这种极端比例在预算内自然落到 1536 × 640。
-            "step": 64, "min_short_edge": 256, "max_long_edge": 1536, "max_pixels": 1048576,
-            "budgets": [1048576],
-            "aspects": [[1, 1], [9, 16], [16, 9], [3, 4], [4, 3], [2, 3], [3, 2], [21, 9]],
-        },
-        "defaults": {"size": [1024, 1024], "steps": 20, "ref_strength": 0.95},
+        "defaults": {"ref_strength": 0.95},
+        "typical_seconds": 45.0,
         "roles": ["unet", "clip", "vae"],
         "family": "qwen_image_21",
-        "typical_seconds": 45.0,
+        "steps": {"values": (12, 16, 20, 25, 30, 40), "default": 20},
     },
 }
 
@@ -372,48 +312,146 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
 ROLE_FOLDERS = {"checkpoint": "checkpoints", "unet": "diffusion_models",
                 "clip": "text_encoders", "vae": "vae"}
 
-Resolver = Callable[[str], dict[str, Any]]
+#: How an ability introduces itself when no single file can name it.  A
+#: one-checkpoint ability is named by its checkpoint; the render triple has no
+#: one file to point at, so it uses the model family's own name.
+ABILITY_NAMES = {"qwen_image_21": "qwen2.1"}
 
 
-def ids() -> list[str]:
-    return list(CAPABILITIES)
+def check_frames(frames: dict[str, list[dict[str, Any]]] | None = None) -> None:
+    """The two assembly-time assertions of the spec's frames section.
+
+    Both are facts about *this* table, not about a request: a category with no
+    frame is a document that offers a scenario nothing can serve, and a repeated
+    ``(category, resolution)`` is two abilities claiming the same answer to the
+    only question a client asks.  Neither can be caught per request, because
+    neither depends on the request — so they are raised when the plugin loads,
+    where the person who can fix them is looking.
+    """
+    table = FRAMES if frames is None else frames
+    for category in CATEGORY_TABLE:
+        # 数的是**分辨率**不是帧条目: 一档帧却一条分辨率都没有, 客户端照样无从下
+        # 手, 而那正是这条断言要挡的东西。missing 的键、空表、空 resolution 三种
+        # 写法都要落到同一个结论上。
+        frames = table.get(category) or []
+        canvases = sum(len(entry.get("resolution") or [])
+                       for entry in frames if isinstance(entry, dict))
+        if not canvases:
+            raise ValueError(f"类别 {category} 在 FRAMES 里没有任何帧")
+    seen: set[tuple[str, str]] = set()
+    for category, entries in table.items():
+        for entry in entries or []:
+            for resolution in (entry or {}).get("resolution") or []:
+                key = (str(category), str(resolution))
+                if key in seen:
+                    raise ValueError(f"FRAMES 里 ({category}, {resolution}) 出现了两次")
+                seen.add(key)
 
 
-def names() -> list[str]:
-    """Every name a client may submit: the ids and all their aliases."""
-    out: list[str] = []
-    for entry in CAPABILITIES.values():
-        out.append(entry["id"])
-        out.extend(entry["aliases"])
-    return out
+check_frames()
 
 
-def find(name: Any) -> dict[str, Any] | None:
-    """Resolve an id *or* an alias to the capability it names."""
-    wanted = str(name or "").strip().lower()
-    if not wanted:
-        return None
-    entry = CAPABILITIES.get(wanted)
-    if entry is not None:
-        return entry
-    for candidate in CAPABILITIES.values():
-        if wanted in [str(alias).lower() for alias in candidate["aliases"]]:
-            return candidate
-    return None
+def categories() -> list[str]:
+    return list(CATEGORY_TABLE)
 
 
-def spec_of(name: Any) -> dict[str, Any]:
-    """Like :func:`find`, but raises ``unsupported_capability``."""
-    entry = find(name)
+def category_of(name: Any) -> dict[str, Any]:
+    """Resolve a submitted ``category``, or raise ``unsupported_category``.
+
+    There are no aliases: a category is named by the one word the document
+    published, and a client that sends another word is told so instead of being
+    quietly served something else.
+    """
+    entry = CATEGORY_TABLE.get(str(name or "").strip().lower())
     if entry is None:
-        raise ValueError("unsupported_capability")
+        raise ValueError("unsupported_category")
     return entry
+
+
+def family_of(category: str) -> str:
+    return str(CATEGORY_TABLE[str(category)]["family"])
+
+
+def frames_of(category: str) -> list[dict[str, Any]]:
+    """That category's frames, each stamped with its own category name."""
+    return [{**deepcopy(entry), "category": str(category)}
+            for entry in FRAMES.get(str(category)) or []]
+
+
+def default_resolution(category: str) -> str:
+    """The first frame's first resolution — the default is an entry in the table.
+
+    Not a constant of its own: "the first one" and "the default" would otherwise
+    be two facts to keep in step, and the whole point of a menu is that the
+    thing it defaults to is on it.
+    """
+    entries = FRAMES.get(str(category)) or []
+    for entry in entries:
+        for resolution in entry.get("resolution") or []:
+            return str(resolution)
+    raise ValueError("unsupported_size")
+
+
+def validate_resolution(category: str, resolution: Any) -> str:
+    """A member check against the frames table, or ``unsupported_size``.
+
+    Membership, not a numeric domain: ``896x1152`` used to be accepted because
+    it was a legal canvas, and that is exactly the freedom this version removes.
+    A client picks from the menu; nothing computes a shape the menu never
+    offered.
+    """
+    wanted = str(resolution or "").strip()
+    if not wanted:
+        return default_resolution(category)
+    allowed = {str(item) for entry in frames_of(category) for item in entry["resolution"]}
+    if wanted not in allowed:
+        raise ValueError("unsupported_size")
+    return wanted
+
+
+def validate_step(category: str, step: Any) -> int:
+    """The reference implementation's own ``step`` enumeration.
+
+    This is the plugin's behaviour, not a term of the contract: the spec defines
+    no field inside ``ext_params`` at all.  It is written down here, next to the
+    category it belongs to, and in the README.
+    """
+    entry = CATEGORY_TABLE[str(category)]
+    allowed = [int(value) for value in entry["steps"]["values"]]
+    if step is None:
+        return int(entry["steps"]["default"])
+    # ``int(20.5)`` 是 20 —— 直接取整会让一个小数步数被静默收下, 客户端以为
+    # 自己发的值生效了。这里要求它本来就是个整数。
+    try:
+        number = float(step)
+    except (TypeError, ValueError):
+        raise ValueError("unsupported_steps") from None
+    if number != number or number != int(number):
+        raise ValueError("unsupported_steps")
+    selected = int(number)
+    if selected not in allowed:
+        raise ValueError("unsupported_steps")
+    return selected
+
+
+def resolution_size(resolution: Any) -> tuple[int, int]:
+    """``"768x1344"`` → ``(768, 1344)``; anything else is ``unsupported_size``."""
+    parts = str(resolution or "").split("x")
+    if len(parts) != 2:
+        raise ValueError("unsupported_size")
+    try:
+        width, height = int(parts[0]), int(parts[1])
+    except (TypeError, ValueError):
+        raise ValueError("unsupported_size") from None
+    if width <= 0 or height <= 0:
+        raise ValueError("unsupported_size")
+    return width, height
 
 
 def clamp_ref_strength(value: Any, fallback: float) -> float:
     """Clamp a continuous knob to its declared domain.
 
-    Enumerations (``size`` / ``steps``) reject an out-of-range value; a
+    A resolution is a member of a list and an unknown one is refused; a
     continuous value is clamped and echoed back, because there is no plausible
     reason to fail a job over 0.96.
     """
@@ -427,83 +465,98 @@ def clamp_ref_strength(value: Any, fallback: float) -> float:
     return round(min(max(number, low), high), 4)
 
 
-def validate_values(capability: dict[str, Any], size: Any, steps: Any) -> tuple[list[int], int]:
-    """画幅按约束判、步数按枚举判 —— 两类字段本来就不是一回事。
-
-    ``size`` 认的是 :func:`fits` 那条约束（对齐步长 + 边与像素上下界），所以任何合法
-    画幅都收，不只是 ``values.size`` 里列出来的那几个 —— 客户端可以按自己的需要算一个。
-    ``steps`` 仍然是枚举，越界报 ``unsupported_steps``。
-    """
-    if size is None:
-        chosen = [int(capability["defaults"]["size"][0]), int(capability["defaults"]["size"][1])]
-    else:
-        try:
-            chosen = [int(size[0]), int(size[1])]
-        except (TypeError, ValueError, IndexError, KeyError):
-            raise ValueError("unsupported_size") from None
-    if not fits(chosen, capability.get("size") or {}):
-        raise ValueError("unsupported_size")
-
-    allowed = [int(value) for value in capability["values"]["steps"]]
-    if steps is None:
-        selected = int(capability["defaults"]["steps"])
-    else:
-        try:
-            selected = int(steps)
-        except (TypeError, ValueError):
-            raise ValueError("unsupported_steps") from None
-    if selected not in allowed:
-        raise ValueError("unsupported_steps")
-    return chosen, selected
-
-
-def clean_defaults(capability: dict[str, Any]) -> dict[str, Any]:
+def clean_defaults(category: dict[str, Any]) -> dict[str, Any]:
     """The defaults a client may rely on, as plain JSON."""
-    return json.loads(json.dumps(capability["defaults"]))
+    return json.loads(json.dumps(category["defaults"]))
 
 
-def entry(capability: dict[str, Any], models: list[dict[str, Any]]) -> dict[str, Any]:
-    """One capability as it appears in the document."""
+def rule_entry(category: str) -> dict[str, Any]:
+    """One ``rules[]`` entry, as it appears in the document."""
+    entry = CATEGORY_TABLE[str(category)]
+    rule = str(entry["rule"])
     return {
-        "id": capability["id"],
-        "aliases": list(capability["aliases"]),
-        "category": list(capability["category"]),
-        "signature": capability["signature"],
-        "input": capability["input"],
-        "output": deepcopy(capability["output"]),
-        "label": deepcopy(capability["label"]),
-        "description": deepcopy(capability["description"]),
-        "prompt": deepcopy(capability["prompt"]),
-        "needs": deepcopy(capability["needs"]),
-        "ignores": list(capability["ignores"]),
-        "values": deepcopy(values(capability)),
-        # 画幅的**约束**也要播报: 客户端不该只会在菜单里挑, 它想按自己的需要算一张
-        # 合法画幅时, 得先知道对齐步长和上下界是哪几个数。
-        "size_domain": deepcopy(capability.get("size") or {}),
-        "defaults": clean_defaults(capability),
-        "models": models,
-        "ready": bool(models) and all(item.get("ready") for item in models),
-        "typical_seconds": capability["typical_seconds"],
+        "category": str(category),
+        "rule": rule,
+        # 由规则表算出来，条目里没有第二份副本：改规则拼法只改一处。
+        "signature": signature_of(rule),
+        "input": input_of(rule),
+        "label": deepcopy(entry["label"]),
+        "description": deepcopy(entry["description"]),
+        "needs": deepcopy(entry["needs"]),
+        "prompt": deepcopy(entry["prompt"]),
+        "defaults": clean_defaults(entry),
+        "typical_seconds": entry["typical_seconds"],
     }
 
 
-def capabilities(resolve: Resolver) -> list[dict[str, Any]]:
-    return [entry(value, list(resolve(value["id"]) or [])) for value in CAPABILITIES.values()]
+def rules() -> list[dict[str, Any]]:
+    return [rule_entry(category) for category in CATEGORY_TABLE]
 
 
-def document(*, resolve: Resolver, authorized: bool, auth_required: bool, translation: dict[str, Any],
-             available: dict[str, list[str]] | None = None, auth_hint: str = "") -> dict[str, Any]:
+def _resolved_of(resolved: Any) -> dict[str, Any]:
+    """Normalise whatever a caller's resolver returned."""
+    if not isinstance(resolved, dict):
+        resolved = {}
+    files = resolved.get("files")
+    files = {str(key): str(value) for key, value in files.items()} if isinstance(files, dict) else {}
+    missing = [str(item) for item in (resolved.get("missing") or [])]
+    return {"files": files, "ready": bool(resolved.get("ready")), "missing": missing}
+
+
+def abilities(files_of: Callable[[str], Any]) -> list[dict[str, Any]]:
+    """The model-file groups that can actually answer, and what each can make.
+
+    Grouped by *the files it runs on* — ``fast`` / ``inpaint`` / ``upscale`` are
+    three categories, but when they point at one checkpoint they are one
+    ability, and the operator who gives ``inpaint`` its own checkpoint has two.
+    Deriving the grouping instead of declaring it means the document can never
+    claim a model that is not the one a job would use.
+
+    The graph builder is part of the key as well.  In practice the files differ
+    whenever the family does, so that part never decides anything today; it is
+    there so that two families which happened to be configured with the same
+    file names could never be merged into one entry claiming a single builder
+    serves both — a claim that would be false the moment anyone read it.
+
+    Order is preserved from the category table, so ``abilities[0]`` is the one
+    holding the first category's frames.
+    """
+    groups: dict[tuple[str, tuple[tuple[str, str], ...]], dict[str, Any]] = {}
+    for category in CATEGORY_TABLE:
+        resolved = _resolved_of(files_of(category))
+        key = (family_of(category), tuple(sorted(resolved["files"].items())))
+        group = groups.get(key)
+        if group is None:
+            group = groups[key] = {
+                "name": (resolved["files"].get("checkpoint")
+                         or ABILITY_NAMES.get(family_of(category)) or family_of(category)),
+                "files": resolved["files"],
+                "ready": resolved["ready"],
+                "missing": resolved["missing"],
+                "frames": [],
+            }
+        if not resolved["ready"]:
+            group["ready"] = False
+        for role in resolved["missing"]:
+            if role not in group["missing"]:
+                group["missing"].append(role)
+        group["frames"].extend(frames_of(category))
+    return list(groups.values())
+
+
+def document(*, files_of: Callable[[str], Any], authorized: bool, auth_required: bool,
+             translation: dict[str, Any], auth_hint: str = "", errors: list[str] | None = None) -> dict[str, Any]:
     """The whole discovery document.
 
     Answers even when the password is wrong: ``auth.authorized`` says which it
     was, which is what lets a client tell "the address is right, the password is
     not" out of the one call it was going to make anyway.
 
-    ``translation`` and ``available`` are supplied by the caller rather than read
+    ``translation`` and ``files_of`` are supplied by the caller rather than read
     here: this module is the specification, and it must not depend on the parts
     of the server that touch the network or ComfyUI's model folders.
     """
-    return {
+    payload: dict[str, Any] = {
         "spec": SPEC,
         "plugin": {"id": PLUGIN_ID, "label": deepcopy(PLUGIN_LABEL), "version": __version__},
         "auth": {
@@ -511,20 +564,26 @@ def document(*, resolve: Resolver, authorized: bool, auth_required: bool, transl
             "authorized": bool(authorized),
             "scheme": "Bearer",
             "header": "Authorization",
-            "hint": auth_hint or "密码在 ComfyUI 的 HamDraw 配置节点里设置。",
+            "hint": auth_hint or "密码在 ComfyUI 的 CHP 插件配置节点里设置。",
         },
         "endpoints": dict(ENDPOINTS),
+        "rules": rules(),
+        "abilities": abilities(files_of),
         "input_schemas": deepcopy(INPUT_SCHEMAS),
-        "capabilities": capabilities(resolve),
         "translation": deepcopy(translation or {}),
-        "models": {"available": deepcopy(available or {})},
     }
+    if errors:
+        # 参考实现多播报的一项：它认得的错误码。客户端据此把回执翻成人话；
+        # 规范只要求「未知顶层键必须忽略」，所以这一项是可选的。
+        payload["errors"] = sorted(str(code) for code in errors)
+    return payload
 
 
 __all__ = [
-    "ALIAS_ROOTS", "API_ROOT", "CAPABILITIES", "CATEGORIES", "ENDPOINTS",
-    "GROW_MASK_RANGE", "INPUT_SCHEMAS", "PLUGIN_ID", "PLUGIN_LABEL",
-    "REF_STRENGTH_RANGE", "ROLE_FOLDERS", "SIZE_STEP", "SPEC", "capabilities",
-    "clamp_ref_strength", "clean_defaults", "document", "entry", "find", "fits",
-    "ids", "names", "sizes", "spec_of", "validate_values", "values",
+    "ABILITY_NAMES", "API_ROOT", "CATEGORY_TABLE", "ENDPOINTS", "FRAMES",
+    "INPUT_SCHEMAS", "PLUGIN_ID", "PLUGIN_LABEL", "REF_STRENGTH_RANGE",
+    "ROLE_FOLDERS", "RULES", "SPEC", "abilities", "categories", "category_of",
+    "check_frames", "clamp_ref_strength", "clean_defaults", "default_resolution",
+    "document", "family_of", "frames_of", "input_of", "resolution_size",
+    "rule_entry", "rules", "signature_of", "validate_resolution", "validate_step",
 ]

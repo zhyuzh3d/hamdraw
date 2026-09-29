@@ -4,7 +4,7 @@
   var app = global.hamdraw = global.hamdraw || {};
   var listeners = {};
 
-  app.version = "0.5.33";
+  app.version = "0.5.46";
   app.events = {
     on: function (name, listener) {
       listeners[name] = listeners[name] || [];
@@ -76,7 +76,6 @@
     connection: { endpoint: "", apiKey: "", customHeaders: "" },
     quick: {
       slot: "quick",
-      task: "quick",
       name: "快速生图",
       protocol: "chp",
       endpoint: "",
@@ -87,7 +86,6 @@
       height: 512,
       steps: 8,
       refStrength: 0.55,
-      growMaskBy: 8,
       quality: "low",
       timeoutMs: 60000,
       customHeaders: "",
@@ -96,7 +94,6 @@
     },
     inpaint: {
       slot: "inpaint",
-      task: "inpaint",
       name: "局部重绘",
       protocol: "chp",
       endpoint: "",
@@ -107,7 +104,6 @@
       height: 512,
       steps: 6,
       refStrength: 0.3,
-      growMaskBy: 8,
       quality: "low",
       timeoutMs: 90000,
       customHeaders: "",
@@ -116,7 +112,6 @@
     },
     upscale: {
       slot: "upscale",
-      task: "upscale",
       name: "高清渲染",
       protocol: "chp",
       endpoint: "",
@@ -125,13 +120,13 @@
       inputMode: "sketch",
       width: 1024,
       height: 1024,
-      // The numbers below belong to the capability this slot submits, which is the
-      // plugin's `upscale` — the same word this slot uses. They are only the starting
-      // point: once /chp/info has been read they come from what the capability
-      // declares, and the sheet prints them rather than offering them.
+      // The canvas and the reference weight below belong to the category this task
+      // submits — `upscale`, the same word this slot uses. They are only the starting
+      // point: once the plugin's information document has been read, the canvas comes
+      // from the frame it publishes and the weight from its own defaults, and the
+      // sheet prints them rather than offering them.
       steps: 8,
       refStrength: 0.75,
-      growMaskBy: 8,
       quality: "high",
       timeoutMs: 240000,
       customHeaders: "",

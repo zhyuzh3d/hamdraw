@@ -82,7 +82,7 @@
           <button class="tool-button is-active" data-tool="pencil" data-help-zh="用细线勾勒轮廓，可调整粗细与透明度。" data-help-en="Sketch outlines with adjustable size and opacity."><i class="fa-solid fa-pencil"></i><span data-zh="铅笔" data-en="Pencil">铅笔</span></button>
           <button class="tool-button" data-tool="brush" data-help-zh="铺设色块，可调整粗细、颜色与透明度。" data-help-en="Paint color areas with adjustable size, color, and opacity."><i class="fa-solid fa-paintbrush"></i><span data-zh="涂色" data-en="Brush">涂色</span></button>
           <button class="tool-button" data-tool="eraser" data-help-zh="擦除笔画或图片上的画布元素内容。" data-help-en="Erase content from editable canvas elements."><i class="fa-solid fa-eraser"></i><span data-zh="擦除" data-en="Eraser">擦除</span></button>
-          <button class="tool-button" data-tool="mask" data-help-zh="标记希望模型局部重绘的区域。" data-help-en="Mark an area for supported models to repaint."><i class="fa-solid fa-mask-face"></i><span data-zh="局部" data-en="Mask">局部</span></button>
+          <button class="tool-button" data-tool="mask" data-help-zh="直接屏幕绘制，然后用局部提示词修改绘制的区域" data-help-en="Draw straight on the screen, then use the local prompt to change the drawn area"><i class="fa-solid fa-mask-face"></i><span data-zh="局部" data-en="Mask">局部</span></button>
           <button class="tool-button" id="add-image" data-help-zh="导入一张图片作为可移动、可缩放的画布元素。" data-help-en="Import an image as a movable and resizable canvas element."><i class="fa-regular fa-image"></i><span data-zh="图片" data-en="Image">图片</span></button>
         </nav>
         <div class="tool-options" id="tool-options">
@@ -142,7 +142,7 @@
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
   <script src="./app/core/namespace.js"></script><script src="./app/assets/comfyui-plugin.js"></script><script src="./app/core/utils.js"></script><script src="./app/core/runtime.js"></script><script src="./app/core/drawing.js"></script><script src="./app/core/i18n.js"></script>
   <script src="./app/platform/haminn.js"></script><script src="./app/services/assets.js"></script><script src="./app/services/store.js"></script><script src="./app/services/providers.js"></script><script src="./app/services/image-engine.js"></script>
-  <script src="./app/components/ui.js"></script><script src="./app/components/canvas.js"></script><script src="./app/components/render-preview.js"></script><script src="./app/components/settings.js"></script><script src="./app/components/gallery.js"></script>
+  <script src="./app/components/ui.js"></script><script src="./app/components/canvas-io.js"></script><script src="./app/components/canvas.js"></script><script src="./app/components/render-preview.js"></script><script src="./app/components/settings.js"></script><script src="./app/components/gallery.js"></script>
   <script src="./app/features/editor.js"></script><script src="./app/features/self-test.js"></script><script src="./app/app.js"></script>
 </body>
 </html>

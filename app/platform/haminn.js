@@ -8,6 +8,12 @@
   // without a reply or an error, which leaves the caller waiting for its own
   // timeout. Every inline request body therefore stays well below that.
   var MESSAGE_CHARS = 200000;
+  // A body bigger than this is not lowered to fit — it is filed instead. The
+  // host reads a request body straight out of its file store when the request
+  // carries a logicalFileId, so the bytes never travel inside the bridge
+  // message at all. The threshold is far below MESSAGE_CHARS so the envelope
+  // around an inline body can never push the message over the transport limit.
+  var BODY_FILE_THRESHOLD = 120000;
 
   function current() { return window.haminn && window.haminn.isReady ? window.haminn : null; }
   function markReady() {
@@ -43,25 +49,59 @@
       "This request carries " + kb + " KB, above what the host accepts in one message. Remove image elements from the canvas or use a smaller size and retry."));
   }
 
+  // Chunk sizes are quoted in bytes of file content, but each chunk crosses the
+  // bridge inside its own message as base64, which is a third longer again.
+  function chunkBytes(maxChunkBytes) {
+    return Math.max(8192, Math.floor((Number(maxChunkBytes) || 65536) * 3 / 4) - 4096);
+  }
+  async function writeBodyFile(bridge, text, contentType) {
+    var handle = await bridge.files.beginWrite({ name: "hamdraw-request.json", mime: contentType || "application/json" });
+    var limit = chunkBytes(handle.maxChunkBytes), chunks;
+    try {
+      chunks = app.utils.utf8Chunks(text, limit);
+      for (var index = 0; index < chunks.length; index += 1) {
+        await bridge.files.appendBytes({ writeId: handle.writeId, chunkBase64: app.utils.bytesToBase64(app.utils.utf8Bytes(chunks[index])) });
+      }
+      var file = await bridge.files.finishWrite({ writeId: handle.writeId });
+      return file.logicalFileId;
+    } catch (error) {
+      await bridge.files.abortWrite({ writeId: handle.writeId }).catch(function () {});
+      throw error;
+    }
+  }
+
   async function request(options) {
     app.utils.validateEndpoint(options.url);
-    checkBudget(options);
     var headers = options.headers || {};
     if (current() || await awaitReady(800)) {
-      var params = {
+      var bridge = current(), fileId = "", params = {
         url: options.url,
         method: String(options.method || "GET").toUpperCase(),
         headers: headers,
         timeoutMs: options.timeoutMs || 60000
       };
       if (options.bodyBytes) {
+        checkBudget(options);
         params.bodyBase64 = app.utils.bytesToBase64(options.bodyBytes);
         params.contentType = options.contentType || "application/octet-stream";
       } else if (typeof options.bodyText === "string") {
-        params.bodyText = options.bodyText;
         params.contentType = options.contentType || "application/json";
+        // A large body is filed rather than shrunk: the host streams it out of
+        // its file store, so neither the mask nor the reference picture has to
+        // be degraded to fit a single bridge message.
+        if (options.bodyText.length > BODY_FILE_THRESHOLD && bridge.files && bridge.files.beginWrite) {
+          fileId = await writeBodyFile(bridge, options.bodyText, params.contentType);
+          params.bodyLogicalFileId = fileId;
+        } else {
+          checkBudget(options);
+          params.bodyText = options.bodyText;
+        }
       }
-      return current().network.request(params);
+      try {
+        return await bridge.network.request(params);
+      } finally {
+        if (fileId) await bridge.files.delete({ logicalFileId: fileId }).catch(function () {});
+      }
     }
     var controller = typeof AbortController === "function" ? new AbortController() : null;
     var timer = controller ? setTimeout(function () { controller.abort(); }, options.timeoutMs || 60000) : null;

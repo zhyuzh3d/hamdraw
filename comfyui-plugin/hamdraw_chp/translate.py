@@ -1,7 +1,7 @@
 """Turn a prompt a text encoder cannot read into one it can.
 
-Some capabilities run a text encoder that only understands English.  Which ones
-is declared per capability (``prompt.language``) and published in the discovery
+Some categories run a text encoder that only understands English.  Which ones
+is declared per category (``prompt.language``) and published in the discovery
 document, so this module never has to guess.
 
 **This runs inside the submit path.**  A client may translate ahead of time and

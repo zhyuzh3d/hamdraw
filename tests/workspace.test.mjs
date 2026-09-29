@@ -188,13 +188,13 @@ await store.flush();
 assert.equal((await store.loadCanvas()).prompt, "Retry after canvas write failure", "a failed canvas write must remain retryable instead of poisoning the save fingerprint");
 // Generation must keep one physical request in flight, coalesce updates, and ignore dismissed results.
 const pending = [], inputs = [], events = [], generationConfigs = [];
-let composeOptions = null, visibleComposeOptions = null, composeMethod = "", maskCompositions = 0;
+let composeOptions = null, visibleComposeOptions = null, composeMethod = "", maskCompositions = 0, maskComposeArgs = null;
 app.events.on("generation:done", value => events.push(value));
 app.components.canvas = {
   composeInput: async options => { composeMethod = "image"; composeOptions = options; return "data:image/png;base64,x"; },
   composeVisibleInput: async options => { composeMethod = "visible"; visibleComposeOptions = options; return "data:image/png;base64,visible"; },
   imageDimensions: async () => ({ width: 1024, height: 1024 }),
-  composeMask: () => { maskCompositions += 1; return "data:image/png;base64,mask"; }, hasMask: () => true
+  composeMask: (openAiAlpha, size) => { maskCompositions += 1; maskComposeArgs = [openAiAlpha, size]; return "data:image/png;base64,mask"; }, hasMask: () => true
 };
 app.services.providers = { generate: (config, input) => { generationConfigs.push(config); inputs.push(input); return new Promise(resolve => pending.push(resolve)); } };
 app.services.store.scheduleCanvasSave = () => {};
@@ -209,8 +209,9 @@ const first = app.services.imageEngine.run("quick", false);
 await new Promise(resolve => setTimeout(resolve, 5));
 assert.equal(pending.length, 1, "Fast must submit one request once a prompt exists");
 assert.equal(composeMethod, "image", "Fast must submit the actual canvas composition without rewriting its contrast or colors");
-assert.deepEqual(JSON.parse(JSON.stringify(composeOptions)), { mime: "image/jpeg", quality: 0.92, maxBytes: 192000 }, "the reference image must be encoded as a JPEG that fits the host message budget");
-assert.ok(composeOptions.maxBytes < app.platform.haminn.messageChars, "the reference image must leave the host message budget room for the mask and the RPC envelope");
+assert.deepEqual(JSON.parse(JSON.stringify(composeOptions)), { mime: "image/jpeg", quality: 0.92, maxBytes: 200000, size: 512 }, "the reference image must be encoded as a JPEG that fits the host message budget, at the canvas the job runs at");
+assert.ok(composeOptions.maxBytes <= app.platform.haminn.messageChars, "the reference image must stay inside the host message budget");
+assert.equal(composeOptions.size, app.config.quick.width, "fast draw must compose its reference at the job canvas, not at the app's wider drawing surface");
 assert.equal(inputs[0].seed, 73, "locked seed must be submitted unchanged");
 assert.equal(inputs[0].colorStrength, 0.47, "the artwork color strength must reach the provider request unchanged");
 assert.equal(maskCompositions, 0, "Fast without marks must not encode an unused mask");
@@ -229,8 +230,9 @@ await new Promise(resolve => setTimeout(resolve, 5));
 assert.equal(pending.length, 1, "cancel must release the internal running lock even if the detached request has not settled");
 pending.shift()({ src: "after-cancel" }); await afterCancel;
 assert.equal(events.length, 2, "a new request after cancel must be able to complete normally");
-// Local redraw compresses the reference into whatever the mask left of the
-// transport budget; a reference that overshoots it would be dropped in silence.
+// Local redraw no longer shrinks the reference to pay for the mask: a body that
+// outgrows one bridge message is filed in the host file store instead, so the
+// mask is no longer subtracted from what the reference may weigh.
 app.state.maskMode = true;
 app.state.localPrompt = "a golden crown";
 app.state.prompt = "a fox holding a crown";
@@ -242,8 +244,10 @@ assert.equal(generationConfigs.at(-1).slot, "inpaint", "an active mask must swit
 assert.equal(maskCompositions, 1, "local redraw must submit exactly one mask");
 assert.equal(inputs.at(-1).maskDataUrl, "data:image/png;base64,mask");
 assert.equal(composeMethod, "image", "local redraw must reference the canvas composition, not the visible snapshot");
-assert.equal(composeOptions.maxBytes, app.platform.haminn.messageChars - ("data:image/png;base64,mask".length + 8000), "the mask must be subtracted from the reference image budget");
-assert.ok(composeOptions.maxBytes + "data:image/png;base64,mask".length < app.platform.haminn.messageChars, "reference plus mask must stay inside one host message");
+assert.equal(composeOptions.maxBytes, app.platform.haminn.messageChars, "the mask must not be subtracted from the reference image budget any more, now that a large body is filed instead of inlined");
+assert.equal(composeOptions.size, 512, "the reference image must be composed at the canvas the local-redraw job runs at, not the app's wider one");
+assert.deepEqual(maskComposeArgs, [false, 512], "the mask must be composed at that same canvas, so the two reach the model on one grid");
+assert.equal(inputs.at(-1).openAiMaskDataUrl, null, "a plugin redraw sends the plain mask, not an alpha one");
 assert.equal(inputs.at(-1).localPrompt, undefined, "the local description must be submitted as the prompt instead of adding a field");
 assert.equal(inputs.at(-1).prompt, "a golden crown", "a local redraw must submit the local description alone instead of joining the artwork-wide prompt");
 pending.shift()({ src: "redraw" }); await redraw;
@@ -253,7 +257,7 @@ Object.assign(app.config.upscale, { endpoint: "https://images.example.test/v1", 
 const render = app.services.imageEngine.run("upscale", false);
 await new Promise(resolve => setTimeout(resolve, 5));
 assert.equal(composeMethod, "visible", "Render must submit the current visible canvas rather than the generation-mode composition");
-assert.deepEqual(JSON.parse(JSON.stringify(visibleComposeOptions)), { mime: "image/jpeg", quality: 0.92, maxBytes: 192000, size: 1024 }, "Render must upload a budgeted JPEG of the visible canvas");
+assert.deepEqual(JSON.parse(JSON.stringify(visibleComposeOptions)), { mime: "image/jpeg", quality: 0.92, maxBytes: 200000, size: 1024 }, "Render must upload a budgeted JPEG of the visible canvas");
 assert.equal(generationConfigs.at(-1).width, 1024); assert.equal(generationConfigs.at(-1).height, 1024); assert.equal(generationConfigs.at(-1).inputMode, "sketch");
 assert.equal(inputs.at(-1).maskDataUrl, null); assert.equal(inputs.at(-1).openAiMaskDataUrl, null);
 pending.shift()({ src: "render-1024" }); await render;

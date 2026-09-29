@@ -17,6 +17,7 @@ const app = context.hamdraw;
 let scheduleCalls = 0, saveCalls = 0;
 app.services.imageEngine = { schedule: () => { scheduleCalls += 1; } };
 app.services.store = { scheduleCanvasSave: () => { saveCalls += 1; } };
+load("app/components/canvas-io.js");
 load("app/components/canvas.js");
 const canvas = app.components.canvas;
 

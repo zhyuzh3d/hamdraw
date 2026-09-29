@@ -78,7 +78,10 @@
       : app.utils.composePrompt(app.state.prompt, "");
     var negativePrompt = slot === "upscale" ? app.utils.composePrompt(RENDER_NEGATIVE, app.state.negativePrompt) : app.state.negativePrompt;
     var config = app.utils.copy(app.config[slot]);
-    config.slot = slot; config.task = slot; config.capability = slot;
+    // Only the slot: the category a CHP task submits is resolved from it through
+    // the one map in services/providers.js, so no second name for the same task
+    // travels with a request.
+    config.slot = slot;
     if (slot === "upscale") config.inputMode = "sketch";
     if (masking && !String(app.state.localPrompt || "").trim()) {
       if (!automatic) app.events.emit("error", new Error(t("先点「描述」写清这一块要改成什么，再生成", "Describe what this area should become first")));
@@ -106,23 +109,32 @@
     app.state.busy = true; app.events.emit("generation:start", { slot: slot });
     try {
       var maskDataUrl = null, openAiMaskDataUrl = null;
+      //: Every slot composes its reference at the canvas the job actually runs at,
+      //: not at the app's own 768² drawing surface. The plugin scales whatever
+      //: reference it is handed to exactly the job canvas before it encodes it, so
+      //: a 768² reference buys a resample rather than detail: the same picture
+      //: reaches the model either way, through one more conversion and a body
+      //: roughly half again as large. The mask is composed at that same size, so
+      //: the two arrive on the grid the sampler uses.
+      var jobSize = Number(config.width) || (slot === "upscale" ? 1024 : 512);
       if (masking) {
-        if (config.protocol === "openai-images") openAiMaskDataUrl = canvasInput.composeMask(true);
-        else if (config.protocol === "sd-webui" || config.protocol === "chp") maskDataUrl = canvasInput.composeMask(false);
+        if (config.protocol === "openai-images") openAiMaskDataUrl = canvasInput.composeMask(true, jobSize);
+        else if (config.protocol === "sd-webui" || config.protocol === "chp") maskDataUrl = canvasInput.composeMask(false, jobSize);
       }
-      // The reference image still travels inline in the request body, so it is
-      // encoded as a JPEG that fits what the mask left of the transport budget; a
-      // full-size PNG would not fit. A local redraw has to reference the decorated
-      // result instead of the sketch, and says so explicitly rather than relying
-      // on the mask mode flag alone.
-      var reserved = String(maskDataUrl || openAiMaskDataUrl || "").length + 8000;
+      // The reference image is encoded as a JPEG rather than a PNG because a
+      // full-size PNG would not fit, but it no longer has to pay for the mask:
+      // a body that outgrows one bridge message is filed in the host file store,
+      // so the mask is no longer subtracted from what the reference may weigh.
+      // A local redraw has to reference the decorated result instead of the
+      // sketch, and says so explicitly rather than relying on the mask mode flag
+      // alone.
       var referenceOptions = {
         mime: "image/jpeg",
         quality: 0.92,
-        maxBytes: Math.max(40000, (app.platform.haminn.messageChars || 200000) - reserved)
+        maxBytes: app.platform.haminn.messageChars || 200000,
+        size: jobSize
       };
       if (masking) referenceOptions.withResult = true;
-      if (slot === "upscale") referenceOptions.size = Number(config.width) || 1024;
       var input = { prompt: prompt, negativePrompt: negativePrompt, seed: app.state.seedLocked ? app.state.seed : -1, strength: app.state.strength, colorStrength: app.state.colorStrength,
         imageDataUrl: slot === "upscale" ? await canvasInput.composeVisibleInput(referenceOptions) : await canvasInput.composeInput(referenceOptions),
         maskDataUrl: maskDataUrl, openAiMaskDataUrl: openAiMaskDataUrl };

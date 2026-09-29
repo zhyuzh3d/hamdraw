@@ -141,13 +141,13 @@
         model.workflow = "";
         model.guidanceScale = 1;
       }
-      // `slot`, `task` and `capability` all name the app's own word for the
-      // task. For quick and redraw that word is also the plugin's capability
-      // id; for the render slot it is not — `capability` is resolved through
-      // the map in services/providers.js, where it becomes `render`.
-      model.slot = name; model.task = name; model.capability = name;
+      // `slot` is the app's own word for the task and the only one kept: the
+      // category a CHP task submits is resolved from it through the one map in
+      // services/providers.js. `task` and `capability` were two more names for the
+      // same thing and are dropped rather than left to go stale in a stored config.
+      model.slot = name;
+      delete model.task; delete model.capability;
       if (!Number.isFinite(Number(model.refStrength)) || Number(model.refStrength) <= 0) model.refStrength = app.defaults[name].refStrength;
-      if (!Number.isFinite(Number(model.growMaskBy))) model.growMaskBy = 8;
     });
     if (previousSchema < 8) {
       // Schema 8 shares one CHP connection across the three tasks: the address a

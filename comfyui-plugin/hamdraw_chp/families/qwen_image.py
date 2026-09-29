@@ -36,6 +36,11 @@ ROLES: tuple[str, ...] = ("unet", "clip", "vae")
 #: dispatcher can hand a family its own options and nothing else.
 OPTIONS: tuple[str, ...] = ("cache_device", "cache_dtype", "reference_edge")
 
+#: Extension keys this family understands, out of the caller's ``ext_params``.
+#: Same pair as the checkpoint family; ``step`` is this implementation's own key,
+#: so its enumeration and default live in the category table.
+EXT: tuple[str, ...] = ("step", "negative_prompt")
+
 #: The Qwen text encoder is loaded through ``CLIPLoader`` with this type.
 CLIP_TYPE = "qwen_image"
 
@@ -123,11 +128,12 @@ def build(
     prompt: str = "",
     negative_prompt: str = "",
     seed: int = 0,
-    steps: int,
+    # 扩展参数，所以带默认值：真正的默认值按类别取自类别表（render 20），由
+    # dispatcher 交进来；这个数是直接调用本函数时的兜底。
+    step: int = 20,
     size: tuple[int, int],
     sampling: dict[str, Any],
     ref_strength: float,
-    grow_mask_by: int = 0,
     cache_device: str = "auto",
     cache_dtype: str = "default",
     reference_edge: Any = REFERENCE_EDGE,
@@ -148,7 +154,7 @@ def build(
     画幅**不来自参考图**: 它由采样 latent 决定, 参考图只提供"长什么样"。
     """
     if masked:
-        # The capability declares needs.mask false, so the HTTP layer never
+        # The category declares needs.mask false, so the HTTP layer never
         # routes a mask here.  Refusing beats quietly ignoring one.
         raise ValueError("bad_mask")
 
@@ -168,7 +174,7 @@ def build(
     nodes: dict[str, Any] = {
         "9": graph.output_node(["8", 0], filename_prefix),
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}},
-        "7": graph.sampler(["4", 0], ["5", 0], ["5", 1], ["6", 0], seed, steps, sampling, 1.0),
+        "7": graph.sampler(["4", 0], ["5", 0], ["5", 1], ["6", 0], seed, step, sampling, 1.0),
         "6": {"class_type": "EmptyLatentImage",
               "inputs": {"width": width, "height": height, "batch_size": 1}},
         "5": {

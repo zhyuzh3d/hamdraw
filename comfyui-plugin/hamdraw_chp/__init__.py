@@ -1,17 +1,21 @@
-"""ComfyUI HamDraw Plugin CHP.
+"""CHP plugin for ComfyUI — the reference implementation of ComfyUI Haminn Protocol.
 
 Drop this folder into ``ComfyUI/custom_nodes/`` and restart ComfyUI.  Then:
 
 1. Open the **HamDraw 配置 (Config)** node, set the password you want your
-   drawing app to send, pick the checkpoint each capability uses, fill in the
-   three files the ``render`` capability needs, and Queue once.  Leaving the
+   drawing app to send, pick the checkpoint each category uses, fill in the
+   three files the ``render`` category needs, and Queue once.  Leaving the
    password empty turns authentication off.
 2. Point the client at this machine's address; it discovers the rest through
    ``GET /chp/info``.
 
-The plugin ships its own graphs for all four capabilities — quick draw, local
-redraw, upscale and a high-quality render — so no API workflow export is ever
+The plugin ships its own graphs for all four categories — ``fast``,
+``inpaint``, ``upscale`` and ``render`` — so no API workflow export is ever
 needed.  The contract is described in ``plans/chp-spec.md``.
+
+CHP is the protocol; ``hamdraw_chp`` is one implementation of it.  That is why
+the package, the ``/chp`` root and ``hamdraw_settings.json`` keep their names
+while the prose says "CHP": the protocol was renamed, not the deployment.
 """
 
 from __future__ import annotations

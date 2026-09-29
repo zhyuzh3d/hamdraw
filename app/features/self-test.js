@@ -452,6 +452,14 @@
       canvas.undo();
       var resultVisibleBefore = app.state.resultVisible, toolBefore = app.state.tool === "mask" ? "pencil" : app.state.tool;
       editor.setTool("mask"); editor.syncCanvas();
+      // Entering local mode has to say what to do next in the one line the user
+      // reads, not leave them to discover the two-step flow by trial.
+      checks.maskHint = document.getElementById("status-line").textContent === app.i18n.text("直接屏幕绘制，然后用局部提示词修改绘制的区域", "Draw straight on the screen, then use the local prompt to change the drawn area");
+      // The local tool is a switch, not a one-way door: the same button that opens
+      // it must put it away and hand the canvas back to the select tool.
+      document.querySelector('[data-tool="mask"]').click();
+      checks.maskToolTogglesOff = app.state.maskMode === false && app.state.tool === "select";
+      editor.setTool("mask"); editor.syncCanvas();
       var maskSlider = document.getElementById("result-opacity"), maskEye = document.getElementById("result-visibility"), maskLabel = document.getElementById("opacity-target-label");
       // Labels are compared through the translator so the checks hold in either language.
       checks.maskControlsRelabelled = app.state.maskMode === true && maskLabel.textContent === app.i18n.text("蒙版层显示（0 或 100）", "Mask layer (0 or 100)") && maskSlider.disabled === false && maskEye.disabled === false;
@@ -593,6 +601,28 @@
       var snapshotPixel = snapshotContext.getImageData(4, 4, 1, 1).data;
       checks.snapshotEditable = app.state.objects.length === snapshotCount + 1 && snapshotObject.type === "image" && snapshotObject.x === 0 && snapshotObject.y === 0 && snapshotObject.width === 768 && snapshotObject.height === 768 && app.state.selectedId === snapshotObject.id && app.state.tool === "select" && handleKeys() === "nw,ne,sw,se,rotate";
       checks.snapshotVisibleEffects = Math.max(snapshotPixel[0], snapshotPixel[1], snapshotPixel[2]) - Math.min(snapshotPixel[0], snapshotPixel[1], snapshotPixel[2]) < 5 && snapshotPixel[0] < 150;
+      // A local redraw has to submit the picture as generated, not the picture as it is
+      // graded — the snapshot above is the control: same picture, same moment, same
+      // adjustments, and it must keep them. So the reference is compared against a
+      // composition taken with the adjustments switched off at the source, while the
+      // graded snapshot has to sit far away from that same reference.
+      var sampleComposition = async function () {
+        var url = await canvas.composeInput({ withResult: true, size: 64, mime: "image/png" });
+        var image = new Image(); image.src = url;
+        await new Promise(function (resolve, reject) { image.onload = resolve; image.onerror = reject; });
+        var probe = document.createElement("canvas"); probe.width = 8; probe.height = 8;
+        var probeContext = probe.getContext("2d"); probeContext.drawImage(image, 0, 0, 8, 8);
+        return probeContext.getImageData(4, 4, 1, 1).data;
+      };
+      var referencePixel = await sampleComposition();
+      app.state.resultAdjustmentsEnabled = false; editor.syncCanvas();
+      var ungradedPixel = await sampleComposition();
+      app.state.resultAdjustmentsEnabled = true; editor.syncCanvas();
+      var channelGap = function (left, right) {
+        return Math.max(Math.abs(left[0] - right[0]), Math.abs(left[1] - right[1]), Math.abs(left[2] - right[2]));
+      };
+      checks.localReferenceUngraded = channelGap(referencePixel, ungradedPixel) <= 3;
+      checks.snapshotStillGraded = channelGap(ungradedPixel, snapshotPixel) >= 40 && channelGap(referencePixel, snapshotPixel) >= 40;
       document.querySelector('[data-tool="brush"]').click();
       checks.directStrokeSliders = Boolean(document.getElementById("brush-size") && document.getElementById("stroke-opacity") && !document.getElementById("brush-more") && !document.getElementById("stroke-opacity-control").hidden);
       checks.toolHelp = document.getElementById("status-line").textContent.indexOf("Paint color areas") >= 0;

@@ -17,6 +17,10 @@ const componentsCss = fs.readFileSync(path.join(root, "styles/components.css"), 
 const baseCss = fs.readFileSync(path.join(root, "styles/base.css"), "utf8");
 const editorJs = fs.readFileSync(path.join(root, "app/features/editor.js"), "utf8");
 const canvasJs = fs.readFileSync(path.join(root, "app/components/canvas.js"), "utf8");
+// The generation half of the canvas: what goes to the model, to the file store and to
+// the gallery. It is a file of its own with its dependencies handed in, so anything
+// about the mask, the budget or a download is read there rather than here.
+const canvasIoJs = fs.readFileSync(path.join(root, "app/components/canvas-io.js"), "utf8");
 const settingsJs = fs.readFileSync(path.join(root, "app/components/settings.js"), "utf8");
 const storeJs = fs.readFileSync(path.join(root, "app/services/store.js"), "utf8");
 const uiJs = fs.readFileSync(path.join(root, "app/components/ui.js"), "utf8");
@@ -135,18 +139,26 @@ assert.ok(editorJs.includes("setPromptStrength(80)") && editorJs.includes("app.s
 assert.ok(editorJs.includes('node("prompt-strength-value").textContent = value + "%"') && editorCss.includes('.prompt-strength .icon-button{flex:0 0 24px') && editorCss.includes('margin:0 0 0 1px') && editorCss.includes('margin-left:3px'), "main image weight must use a borderless compact icon, tight gaps, and visible percentage");
 assert.ok(renderPreviewJs.includes('document.getElementById("render-preview-download").onclick') && renderPreviewJs.includes('surface.toDataURL("image/png")') && renderPreviewJs.includes('result = result || current') && renderPreviewJs.includes('surfaceTask.request()') && renderPreviewJs.includes('saveAdjustmentsDefault'), "render preview download and adjustment actions must use the adjusted surface");
 assert.ok(imageEngineJs.includes('if (slot === "upscale") config.inputMode = "sketch"') && imageEngineJs.includes('canvasInput.composeVisibleInput(referenceOptions)') && imageEngineJs.includes('dimensions.width !== wantWidth'), "Render must submit the visible canvas and require the configured square result");
-assert.ok(providersJs.includes('id: "chp"') && providersJs.includes("CHP_CAPABILITY") && providersJs.includes('base + "/chp"') && providersJs.includes('api + "/jobs"') && providersJs.includes("image_base64") && providersJs.includes("mask_base64") && providersJs.includes("grow_mask_by") && providersJs.includes("ref_strength"), "the CHP format must submit the plugin's capabilities with a reference weight and a mask");
-// A capability is named by its id, never by the model behind it: swapping the
-// model must not require a new client. The plugin's own document is what tells
-// the client what a capability accepts and which fields it ignores, so the
-// client reads /chp/info instead of assuming either.
-assert.ok(providersJs.includes("capability: capability") && !/task: task,/.test(providersJs), "a job must be submitted under its capability id, not the retired task field");
-assert.ok(providersJs.includes('"/chp/info"') && providersJs.includes('chpRemember') && providersJs.includes("capabilitySizes"), "testing the connection must read the plugin's information endpoint and keep what it says");
-// A canvas is a pair, never one number. The plugin stopped publishing squares
-// only in 2.3.0, so a client that keeps just the first number silently turns a
-// portrait 768×1344 into a square 768 — a wrong shape with no error anywhere.
-assert.ok(providersJs.includes("function chpSizes") && providersJs.includes("return [Number(pair && pair[0]), Number(pair && pair[1])];"), "a published canvas must be carried as [width, height], not as its first number alone");
-assert.ok(providersJs.includes("var canvas = sizes.length ? sizes[0] : null;") && providersJs.includes("value.width = canvas ? canvas[0]") && providersJs.includes("value.height = canvas ? canvas[1]"), "the CHP preset must take both edges of the first published canvas instead of mirroring one of them");
+assert.ok(providersJs.includes('id: "chp"') && providersJs.includes("CHP_CATEGORY") && providersJs.includes("chpUrl") && providersJs.includes("image_base64") && providersJs.includes("mask_base64") && providersJs.includes("ref_strength"), "the CHP format must submit a category with a reference weight and a mask");
+// A category is named by the word the plugin published, never by the model behind
+// it: swapping a model must not require a new client. The document is what tells the
+// client which resolutions a category takes and which files answer it, so the client
+// reads that document instead of assuming either — and it reads its *addresses* out
+// of it too, which chp/2 makes a rule rather than a courtesy.
+assert.ok(providersJs.includes("category: category") && !/task: task,/.test(providersJs) && !providersJs.includes("capability: capability"), "a job must be submitted under its category, not the retired capability or task field");
+assert.ok(providersJs.includes("chpInfoRequest") && providersJs.includes("chpRemember") && providersJs.includes("endpoints[name]"), "testing the connection must read the plugin's information document, take its addresses from it, and keep what it said");
+assert.ok(!/chpTask|chpCapability|chpIgnores|capabilitySizes|values\.size|size_domain/.test(providersJs), "no CHP client code may keep the retired capability vocabulary");
+assert.ok(!providersJs.includes("画幅需为 256"), "the app must not keep a second copy of the plugin's own canvas rule: the frames table is the rule");
+// A resolution is a pair, never one number. The plugin publishes a portrait for
+// render — 9:16, 768×1344 — so a client that keeps just the first number silently
+// turns it into a square 768, a wrong shape with no error anywhere.
+assert.ok(providersJs.includes("function chpSizes") && providersJs.includes("chpPair(value)"), "a published resolution must be carried as [width, height], not as its first number alone");
+// And the frame the app locks is chosen by its *label*. A ratio in this contract is
+// a name its author chose rather than the quotient of the two numbers, so searching
+// the list for `width === height` would compute the label it is supposed to read —
+// and would lock whichever square happened to come first in a list whose order is
+// the plugin's to change.
+assert.ok(providersJs.includes('if (String(frames[index].ratio || "") !== "1:1") continue;') && providersJs.includes("var pair = chpPair((frames[index].resolution || [])[0]);") && providersJs.includes("value.width = canvas ? canvas[0]") && providersJs.includes("value.height = canvas ? canvas[1]"), "the CHP preset must lock onto the frame labelled 1:1, taken as a label and as both edges at once — list order is not a promise, and fast and inpaint publish 4:3 and 3:4 next to the 1:1 the app's composition can actually fill");
 // The canvas belongs to the capability, so the sheet prints it instead of offering it.
 // There used to be a pair of buttons on the render slot; what keeps the row honest now
 // is that it prints the pair the request will carry, so it can never advertise a shape
@@ -155,8 +167,16 @@ assert.ok(providersJs.includes("var canvas = sizes.length ? sizes[0] : null;") &
 assert.ok(!settingsJs.includes("data-aspect-width") && !settingsJs.includes("data-aspect-height") && !settingsJs.includes("aspect-sizes"), "the model sheet must not offer a canvas chooser: the canvas is the plugin's, not a menu");
 assert.ok(settingsJs.includes('model.width + " × " + model.height'), "the locked aspect row must print the canvas as a pair, straight from what the job will submit");
 assert.ok(!settingsJs.includes("<strong>1:1</strong>"), "the locked aspect row must name the real shape, not assume every canvas is square");
-assert.ok(providersJs.includes('"/jobs/" + encodeURIComponent(jobId) + "/progress"') && providersJs.includes("queue_position"), "the wait must poll the light progress call and may only count the queue");
-assert.ok(providersJs.includes('if (!chpIgnores(capability, "negative_prompt"))') && providersJs.includes("function chpIgnores"), "a capability that declares a field ignored must not be sent it");
+assert.ok(providersJs.includes('chpJobUrl(base, "progress", "/chp/jobs/{job_id}/progress", jobId)') && providersJs.includes("queue_position"), "the wait must poll the light progress call, at the address the document published, and may only count the queue");
+// The two extension channels, kept apart by layer. `steps` and `negative_prompt` are
+// top-level fields no more: this plugin reads both out of `ext_params`, and a client
+// that kept sending them at the top would have them echoed back in `job.ignored` on
+// every job — which is the receipt working, not a silent failure.
+assert.ok(providersJs.includes("var ext = { step: Number(config.steps) || 8 };") && providersJs.includes("ext.negative_prompt = input.negativePrompt") && providersJs.includes("ext_params: ext"), "the step count and the negative prompt must travel in the model-layer extension channel, not as top-level fields");
+// One request, one carrier. A request with a body sends the password in
+// `chp_params`; a secret in a header is a secret in whatever a proxy logs, and the
+// contract asks for one carrier rather than both.
+assert.ok(providersJs.includes("if (config.apiKey) body.chp_params = { password: config.apiKey };") && providersJs.includes("function chpHeaders") && providersJs.includes("var requestHeaders = chpHeaders(config, \"application/json\");"), "a request with a body must carry the password in chp_params and not in a header");
 assert.ok(!providersJs.includes("detail.progress"), "a percentage must never be drawn from a progress response that does not carry one");
 assert.ok(!providersJs.includes('id: "comfyui"') && !providersJs.includes("/view?filename=") && providersJs.includes("output.url"), "the retired workflow contract and the ComfyUI /view endpoint must be gone; the plugin serves its own images");
 assert.ok(providersJs.includes("chpStrength") && providersJs.includes("base * (value / 0.8)"), "the reference weight must scale from the per-task default while the artwork slider stays neutral at 80%");
@@ -164,19 +184,24 @@ assert.ok(settingsJs.includes("SLOT_TABS") && settingsJs.includes('["inpaint"') 
 assert.ok(!settingsJs.includes("app.config.quality"), "the retired quality slot must not be read by the settings dialog");
 assert.match(componentsCss, /\.advanced summary:focus[^{]*\{outline:none/, "the advanced-options summary must not draw a focus ring");
 assert.ok(!providersJs.includes("a1x") && !providersJs.includes("A1X"), "the A1X protocol implementation must be deleted from the provider layer, not just hidden from the menu");
-assert.ok(providersJs.includes('name: "ComfyUI Hamdraw Plugin CHP'), "the CHP format must be presented under its full ComfyUI Hamdraw Plugin CHP name");
+assert.ok(providersJs.includes('name: "CHP 插件（ComfyUI Haminn Protocol，推荐）"'), "the CHP format must be presented under the plugin's own name for the protocol");
 assert.ok(storeJs.includes("value.upscale = app.utils.merge") && storeJs.includes("value.inpaint = app.utils.merge") && storeJs.includes('model.protocol === "a1x-image"') && storeJs.includes('model.protocol = "chp"') && storeJs.includes("value.schema = 10"), "the two-model migration must split into the three tasks and fold the retired A1X and workflow formats into CHP");
 // Schema 9 is the CVP -> CHP rename. It cannot be left to the comparison sites: a
 // stored `protocol: "cvp"` answers to no entry in the picker, so the dialog would open
 // with nothing selected and `generate()` would refuse a task that used to work.
 assert.ok(storeJs.includes("if (previousSchema < 9)") && storeJs.includes('carried.protocol === "cvp"') && storeJs.includes('carried.protocol = "chp"'), "schema 9 must carry a config still holding the retired CVP protocol id over to CHP");
-// Schema 10 points the render slot at the plugin's `render` capability instead
-// of `upscale`. The two declare different domains — upscale runs 4/8/12/16/20
-// steps up to 2048², render runs 12/16/20/25/30/40 up to 1 MP / 1536 px — so a
-// stored 8 steps or 2048² comes back as unsupported_steps / unsupported_size,
-// a hard failure that reads as a broken model rather than a changed capability.
+// Schema 10 re-derived the render slot's numbers from the app's own defaults. That
+// slot briefly carried 20 steps and a 0.95 reference weight tuned for a different
+// task, and a stored pair like that kept running, so nothing else would ever have
+// corrected it. (The old comment here also claimed the slot submitted `render`; it
+// submits `upscale`, and this app only ever had the three tasks.)
 assert.ok(storeJs.includes("if (previousSchema < 10)") && storeJs.includes("var render = value.upscale") && storeJs.includes("render.steps = app.defaults.upscale.steps") && storeJs.includes("render.refStrength = app.defaults.upscale.refStrength"), "schema 10 must re-derive the render slot's numbers from the app's own defaults");
-assert.ok(providersJs.includes('var CHP_CAPABILITY = { quick: "quick", inpaint: "inpaint", upscale: "upscale" };'), "a slot and the capability it submits must be the same word on both sides; a second name on either side is how a slot and its job drift apart");
+// A task's config keeps one name for the task. `task` and `capability` were two more
+// spellings of `slot`, and a stored copy of either is a name that outlives the
+// vocabulary it was written in — the migration drops them rather than leaving them to
+// be read by something that later believes them.
+assert.ok(storeJs.includes("delete model.task; delete model.capability;") && !/model\.task = name/.test(storeJs) && !/config\.(?:task|capability) = slot/.test(imageEngineJs), "a task's config must keep its slot and no second name for the same thing");
+assert.ok(providersJs.includes('var CHP_CATEGORY = { quick: "fast", inpaint: "inpaint", upscale: "upscale" };'), "the quick task must submit `fast`: chp/2 renamed the category and kept no alias, and only the slot is read to find it");
 // The canvas is locked to one square per task, and a service that cannot make it is
 // reported rather than asked. One definition, called from the two places that can
 // know: validate(), which every submission passes through, and the connection test,
@@ -190,7 +215,7 @@ assert.equal((providersJs.match(/if \(canvasProblem\) throw canvasProblem;/g) ||
 // and the numbers printed rather than offered, it has nothing left to take from it. The
 // slot-to-capability resolution therefore keeps one caller, `preset()`, and the
 // assertion follows it there instead of pinning a call the sheet no longer makes.
-assert.ok(providersJs.includes("function chpSlotCapability") && providersJs.includes("var capability = chpSlotCapability(name);") && !settingsJs.includes("providers.capabilitySizes(name)"), "a slot's capability must be resolved before the plugin's document is read on its behalf; the preset is what reads it now");
+assert.ok(providersJs.includes("function chpSlotCategory") && providersJs.includes("var category = chpSlotCategory(name);") && !settingsJs.includes("providers.capabilitySizes(name)"), "a slot's category must be resolved before the plugin's document is read on its behalf; the preset is what reads it now");
 assert.ok(storeJs.includes("function shareChpConnection") && storeJs.includes('["quick", "inpaint", "upscale"].forEach') && storeJs.includes("model.endpoint = connection.endpoint") && storeJs.includes("var value = shareChpConnection(app.utils.merge(app.defaults, config))"), "one CHP connection must be re-derived into every CHP task on load and on save, so editing it anywhere edits all three");
 assert.ok(settingsJs.includes("var shared = draft.connection") && settingsJs.includes('var sharedField = chp && ["endpoint", "apiKey", "customHeaders"].indexOf(field.name) >= 0') && settingsJs.includes("if (sharedField) shared[field.name] = value"), "the model dialog must read and write the one shared CHP connection while leaving the other formats alone");
 assert.ok(settingsJs.includes("data-plugin-download") && settingsJs.includes("async function downloadPlugin") && settingsJs.includes("bridge.files.beginWrite(") && settingsJs.includes("bridge.files.appendBytes(") && settingsJs.includes("bridge.files.finishWrite(") && settingsJs.includes("bridge.files.export(") && settingsJs.includes('root.querySelector("[data-plugin-download]")') && settingsJs.includes("pluginButton.onclick = ui.action(downloadPlugin)"), "the CHP form must offer the bundled plugin through the host file writer and the system save dialog, not a download");
@@ -220,16 +245,21 @@ assert.ok(settingsJs.includes('<span class="mini-switch"></span>') && !/<ol>/.te
 assert.ok(settingsJs.includes('var PROJECT_URL = "https://github.com/zhyuzh3d/hamdraw"') && settingsJs.includes('class="button button-secondary about-link" href="\' + PROJECT_URL + \'"') && !/<a [^>]*target=/.test(settingsJs), "the about sheet must link to the project in the same frame: this WebView has no window handler for a new tab");
 assert.ok(componentsCss.includes(".about-link{width:100%;margin-top:16px;text-decoration:none}"), "the project link must read as a full-width button");
 assert.ok(haminnJs.includes("var MESSAGE_CHARS = 200000") && haminnJs.includes("function checkBudget") && haminnJs.includes("checkBudget(options)") && haminnJs.includes("messageChars: MESSAGE_CHARS"), "the platform layer must keep every inline body inside the host message budget and expose that budget");
-assert.ok(imageEngineJs.includes("mime: \"image/jpeg\"") && imageEngineJs.includes("maxBytes: Math.max(40000, (app.platform.haminn.messageChars || 200000) - reserved)") && imageEngineJs.includes("String(maskDataUrl || openAiMaskDataUrl || \"\").length + 8000"), "the reference image must be a budgeted JPEG that leaves room for the mask and the RPC envelope");
-assert.ok(canvasJs.includes("async function composeWithinBudget") && canvasJs.includes("encoded.length > maxBytes") && canvasJs.includes("composeWithinBudget(composition, targetSize, options.withResult === true, options)"), "the canvas must step the reference size down until it fits the budget instead of relying on JPEG quality alone");
-assert.ok(canvasJs.includes('async function exportVisibleCanvas()') && editorJs.includes('canvas.exportVisibleCanvas()') && !editorJs.includes('function exportOptions()'), "toolbar Download must directly export the visible canvas");
+// A bridge message over 256 KiB is dropped in silence, and a feathered mask is a
+// gradient that reaches hundreds of thousands of characters. It is filed in the
+// host file store and handed over as a logicalFileId — the host streams it out,
+// so nothing has to be shrunk and nothing is refused.
+assert.ok(haminnJs.includes("BODY_FILE_THRESHOLD") && haminnJs.includes("bridge.files.beginWrite") && haminnJs.includes("app.utils.utf8Chunks") && haminnJs.includes("params.bodyLogicalFileId = fileId"), "a body too large for one bridge message must be filed in the host file store instead of being shrunk or refused");
+assert.ok(imageEngineJs.includes("mime: \"image/jpeg\"") && imageEngineJs.includes("maxBytes: app.platform.haminn.messageChars || 200000") && !imageEngineJs.includes("- reserved"), "the reference image must be a budgeted JPEG that no longer pays for the mask, which is filed rather than inlined");
+assert.ok(canvasIoJs.includes("async function composeWithinBudget") && canvasIoJs.includes("encoded.length > maxBytes") && canvasIoJs.includes("composeWithinBudget(composition, targetSize, options.withResult === true, options)"), "the canvas must step the reference size down until it fits the budget instead of relying on JPEG quality alone");
+assert.ok(canvasIoJs.includes('async function exportVisibleCanvas()') && editorJs.includes('canvas.exportVisibleCanvas()') && !editorJs.includes('function exportOptions()'), "toolbar Download must directly export the visible canvas");
 // The toolbar's Download and the preview's download both hand their bytes to this one
 // function, so it alone decides what lands in the user's gallery — and it used to put an
 // SVG document there, wrapping a JPEG because `writeText` was the only writer back then.
 // The gate is deliberately two-sided: demanding the chunked writer on its own would still
 // pass if the SVG wrapper were re-added beside it, so the wrapper is forbidden by name and
 // the text writer is counted out.
-const exportBody = canvasJs.slice(canvasJs.indexOf("async function exportSource"), canvasJs.indexOf("async function exportVisibleCanvas"));
+const exportBody = canvasIoJs.slice(canvasIoJs.indexOf("async function exportSource"), canvasIoJs.indexOf("async function exportVisibleCanvas"));
 assert.ok(!/<svg[\s>]/.test(exportBody) && !exportBody.includes("image/svg"), "a download must not wrap its picture in an SVG document");
 assert.equal((exportBody.match(/files\.(beginWrite|appendBytes|finishWrite|abortWrite)\(/g) || []).length, 4, "the export must open, feed, commit and be able to abandon the chunked write");
 assert.equal((exportBody.match(/files\.writeText\(/g) || []).length, 0, "the export must not smuggle bytes through the text writer");
@@ -312,7 +342,8 @@ assert.ok(canvasJs.includes("selectionContext.rotate(frame.angle)") && canvasJs.
 // thumbnail - comes through one helper, and it applies the whole placement as the single matrix the
 // canvas takes. That is both why a container can be more than a turn and why none of those three can
 // quietly paint a picture upright while its box says otherwise.
-assert.equal((canvasJs.match(/drawPicture\(/g) || []).length, 4, "every path that paints a picture must go through the one helper that applies the placements");
+assert.equal(((canvasJs + canvasIoJs).match(/drawPicture\(/g) || []).length, 4, "every path that paints a picture must go through the one helper that applies the placements, whether the caller lives in the drawing half or the generation half");
+assert.ok(canvasJs.includes("drawPicture(") && canvasIoJs.includes("drawPicture("), "and both halves paint through it rather than one keeping a private copy");
 assert.equal((canvasJs.match(/drawImage\(image, object\.x, object\.y/g) || []).length, 1, "the upright draw may be spelled in exactly one place, the helper itself, so no paint path can reach the canvas without the placements");
 const drawPictureBody = canvasJs.slice(canvasJs.indexOf("function drawPicture("), canvasJs.indexOf("function scheduleRender("));
 assert.ok(drawPictureBody.includes("applySpin(ctx, object, centre)") && drawPictureBody.includes("drawImage(image, -object.width / 2"), "the helper must apply the placement itself instead of delegating it back to the caller");
@@ -403,7 +434,8 @@ assert.ok(duplicateBody.includes("table[copiedGroups[id]] = app.drawing.cloneGro
 // so an entry of the journal, an undo, a reset or a loaded record that kept the members and lost the
 // table would put a turned group away and bring it back upright.
 assert.ok(canvasJs.includes("return { objects: objects, groups: app.drawing.cloneGroups(state.groups),") && canvasJs.includes("groups: app.drawing.cloneGroups(value && value.groups),"), "a journal entry must carry the containers with the objects, and so must a copy of one");
-assert.ok(canvasJs.includes("state.groups = app.drawing.cloneGroups(data.groups);") && canvasJs.includes("state.groups = {};") && canvasJs.includes("state.groups = saved.groups && Object.keys(saved.groups).length ? app.drawing.cloneGroups(saved.groups) : app.drawing.groupsFromMembers(state.objects);"), "restoring must bring the containers back, resetting must clear them, and loading must fall back to rebuilding them from the members for a record written before containers were nodes");
+assert.ok(canvasJs.includes("state.groups = app.drawing.cloneGroups(data.groups);") && canvasJs.includes("state.groups = {};"), "restoring must bring the containers back and resetting must clear them");
+assert.ok(canvasIoJs.includes("state.groups = saved.groups && Object.keys(saved.groups).length ? app.drawing.cloneGroups(saved.groups) : app.drawing.groupsFromMembers(state.objects);"), "and loading must fall back to rebuilding them from the members for a record written before containers were nodes");
 assert.ok(storeJs.includes("var snapshot = { schema: 11,") && storeJs.includes("snapshot.groups = app.drawing.cloneGroups(app.state.groups);"), "an artwork record must be written at schema 11 and carry the container table beside its objects");
 assert.ok(storeJs.includes("if (Number(copy.schema) < 11) {") && storeJs.includes("copy.groups = app.drawing.groupsFromMembers(copy.objects || []);") && storeJs.includes("(copy.objects || []).forEach(function (object) { delete object.groupRotation; delete object.groupPivot; });"), "and a record written before that must be rebuilt into a table with the copies left on the members dropped, because the members now name the container and nothing else");
 assert.ok(storeJs.includes("if (stored && Number(stored.schema) >= 11)"), "the fingerprint cache may only be entered for a record this version wrote, or a record from before it would be compared against state it never carried");
@@ -423,6 +455,10 @@ assert.ok(selfTestJs.includes("checks.groupPinchScalesContainer") && selfTestJs.
 assert.ok(selfTestJs.includes("checks.mixedGroupPullIsPerAxis") && selfTestJs.includes("checks.groupTurnLoneBox"), "the self-test must pull a corner of a selection whose members disagree and read back that its ink landed exactly where a pull of its own axes put it, and must read a member of a turned group alone as boxed at the angle it is drawn at");
 assert.ok(selfTestJs.includes('=== "nw,ne,sw,se,rotate"'), "the self-test must read the handle set as a sequence, so a circle that displaced a corner cannot pass as a count of five");
 assert.ok(selfTestJs.includes("checks.brandIcon") && selfTestJs.includes('document.querySelector(".brand-mark img")'), "the self-test must look for the app's own icon in the top bar, where a letter standing in for it would otherwise go unnoticed");
+// The reference and the snapshot are read in the same moment, off the same picture, so
+// a reference that quietly inherited the grade cannot pass as correct: the pair has to
+// move in opposite directions.
+assert.ok(selfTestJs.includes("checks.localReferenceUngraded") && selfTestJs.includes("checks.snapshotStillGraded") && selfTestJs.includes("withResult: true, size: 64, mime"), "the self-test must read the local-redraw reference against the graded snapshot on the device, where what actually leaves is decided");
 // The top bar used to carry the letter the product was named after before it was renamed, which
 // no version bump would ever have replaced. The icon the app is packaged with is the one place
 // that can be right for both the top bar and the About sheet, so both must point at it and the
@@ -445,18 +481,36 @@ assert.ok(editorJs.includes('node("rename-work").onclick = rename'), "title and 
 assert.ok(!editorJs.includes("app.state.prompt.slice") && !fs.readFileSync(path.join(root, "app/services/store.js"), "utf8").includes("snapshot.prompt.slice"), "prompt text must never become an artwork title");
 assert.ok(!editorJs.includes('node("generation-strength")') && editorJs.includes('node("overlay-toggle")'), "editor must bind overlay instead of the removed strength slider");
 assert.ok(settingsJs.includes('class="toggle-switch" name="overlayGenerate" type="checkbox" role="switch"'), "artwork overlay setting must use the common switch control");
-assert.ok(canvasJs.includes("async function snapshotVisible()") && canvasJs.includes("renderComposition(composition, WIDTH, true)") && canvasJs.includes("width: WIDTH, height: WIDTH"), "snapshot must flatten the current visible layer order into a full-canvas image element");
-assert.ok(canvasJs.includes("composition.layerOpacity") && canvasJs.includes("if (composition.overlayGenerate)") && canvasJs.includes("if (visibleSnapshot || composition.localMode) await drawCompositionResult"), "composition must place the result below translucent elements only in overlay mode, and keep the result as the local-redraw reference");
+assert.ok(canvasIoJs.includes("async function snapshotVisible()") && canvasIoJs.includes("renderComposition(composition, WIDTH, true)") && canvasIoJs.includes("width: WIDTH, height: WIDTH"), "snapshot must flatten the current visible layer order into a full-canvas image element");
+assert.ok(canvasIoJs.includes("composition.layerOpacity") && canvasIoJs.includes("if (composition.overlayGenerate)") && canvasIoJs.includes("if (visibleSnapshot || composition.localMode) await drawCompositionResult"), "composition must place the result below translucent elements only in overlay mode, and keep the result as the local-redraw reference");
 assert.ok(html.includes('id="mask-canvas"') && html.includes('id="mask-clear"') && html.includes('id="local-prompt"') && html.includes('id="local-prompt-edit"'), "local mode must own a mask layer, a clear action and its own description entry");
-assert.ok(canvasJs.includes("function clearMask()") && canvasJs.includes("function maskStrokes()") && canvasJs.includes("localMode: masking") && canvasJs.includes("objects: masking ? [] : "), "local redraw must clear marks and submit the result without the element layer");
+assert.ok(canvasIoJs.includes("function clearMask()") && canvasIoJs.includes("function maskStrokes()") && canvasIoJs.includes("localMode: masking") && canvasIoJs.includes("objects: masking ? [] : "), "local redraw must clear marks and submit the result without the element layer");
 assert.ok(canvasJs.includes("maskContext.drawImage(maskContentCanvas, 0, 0)") && canvasJs.includes('object.tool === "mask" && maskPreview ? "#e5484d"'), "red marks must render on their own layer above the result");
 assert.match(editorCss, /\.mask-canvas\{z-index:6;pointer-events:none\}/, "the mask layer must sit above the result layer and stay click-through");
 assert.ok(editorJs.includes("function enterMaskMode()") && editorJs.includes("function exitMaskMode()") && !/function exitMaskMode\(\)[\s\S]{0,600}?canvas\.clearMask\(\)/.test(editorJs) && editorJs.includes('node("mask-clear").onclick'), "leaving local mode must hide the red marks but keep them for the next visit; only the broom clears them");
-assert.ok(canvasJs.includes("function contentCount()") && canvasJs.includes("if (state.maskMode && state.maskVisible !== false) {\n        maskContext.drawImage(maskContentCanvas, 0, 0)"), "marks must stay off the canvas outside local mode, obey the mask switch, and never count as content");
+// The local tool is a switch, not a one-way door: the same button that opens it
+// has to put it away and hand the canvas back to the select tool, and the mode
+// has to say what to do next in the one line the user reads.
+const requestMaskToolBody = editorJs.slice(editorJs.indexOf("function requestMaskTool"), editorJs.indexOf("function syncMaskUi"));
+assert.ok(requestMaskToolBody.includes('if (maskMode && app.state.tool === "mask")') && requestMaskToolBody.includes('setTool("select")'), "a second tap on the open local tool must switch back to the select tool instead of re-entering the mode");
+const MASK_HINT = "直接屏幕绘制，然后用局部提示词修改绘制的区域";
+assert.ok(editorJs.includes('t("' + MASK_HINT + '", "Draw straight on the screen, then use the local prompt to change the drawn area")') && html.includes('data-help-zh="' + MASK_HINT + '"'), "opening the local tool must state the two-step flow, and its button must carry the same sentence as its help");
+assert.ok(canvasIoJs.includes("function contentCount()") && canvasJs.includes("if (state.maskMode && state.maskVisible !== false) {\n        maskContext.drawImage(maskContentCanvas, 0, 0)"), "marks must stay off the canvas outside local mode, obey the mask switch, and never count as content");
 assert.match(editorCss, /\.draw-options\.is-mask \.stroke-controls,\.draw-options\.is-eraser \.stroke-controls\{grid-template-columns:minmax\(0,1fr\);flex:1 1 50%/, "the area slider must span the full row inside local mode");
 assert.match(editorCss, /\.draw-options\.is-mask #brush-size-value,\.draw-options\.is-eraser #brush-size-value\{transform:none;flex:0 0 auto;min-width:12px\}/, "the size value must hug the slider instead of sitting in a fixed 25px box");
 assert.match(editorCss, /\.draw-options\.is-mask \.local-prompt-options\{flex:1 1 50%;margin-left:18px\}/, "the clear icon must keep a wider gap before a narrower description field");
-assert.ok(imageEngineJs.includes('masking && (requested === "quick" || !requested) ? "inpaint"') && imageEngineJs.includes("canvasInput.composeMask(false)") && !imageEngineJs.includes('slot !== "quality" && canvasInput.hasMask()'), "an active mask must switch quick draw to the local-redraw task and submit the mask");
+assert.ok(imageEngineJs.includes('masking && (requested === "quick" || !requested) ? "inpaint"') && imageEngineJs.includes("canvasInput.composeMask(false, jobSize)") && !imageEngineJs.includes('slot !== "quality" && canvasInput.hasMask()'), "an active mask must switch quick draw to the local-redraw task and submit the mask");
+// The reference and the mask are composed at the canvas the job actually runs at.
+// The plugin scales whatever reference it is handed to that size before encoding,
+// so sending the app's wider canvas buys a resample rather than detail, and only
+// makes the body larger. Both images must carry the same number or the two arrive
+// on grids that disagree.
+assert.ok(imageEngineJs.includes('jobSize = Number(config.width) || (slot === "upscale" ? 1024 : 512)') && imageEngineJs.includes("canvasInput.composeMask(true, jobSize)"), "the reference image and the mask must both be composed at the canvas the job runs at");
+// Every slot, not just the masked one. Quick draw used to leave the reference at the
+// app's own 768² drawing surface while the job ran at 512², so every fast generation
+// paid for a resample the plugin then threw away. There must be exactly one place the
+// reference's size is decided, or a slot can drift out of step again.
+assert.ok(imageEngineJs.includes("size: jobSize") && !imageEngineJs.includes("referenceOptions.size ="), "the reference image must be composed at the job canvas for every slot, decided in one place");
 assert.ok(editorJs.includes("node(\"auto-toggle\").disabled = masking") && editorJs.includes("node(\"overlay-toggle\").disabled = masking") && editorJs.includes('node("background-color").hidden = maskMode'), "local mode must disable auto, overlay and the background control");
 assert.ok(editorJs.includes("app.state.localPrompt") && editorJs.includes("hasResultImage()") && editorJs.includes("is-disabled"), "local mode must require a result and keep a separate description");
 assert.ok(imageEngineJs.includes('app.utils.composePrompt("", app.state.localPrompt)') && !imageEngineJs.includes("composePrompt(app.state.prompt, masking ?") && imageEngineJs.includes("if (app.state.maskMode || !app.state.autoGenerate"), "a local redraw must submit the local description only, never the artwork-wide prompt, and skip auto generation");
@@ -473,10 +527,17 @@ assert.ok(!/services\.translate|hasCjk|TRANSLATE_TAB|data-translate-now|translat
 assert.ok(!html.includes("translate.js") && !fs.existsSync(path.join(root, "app/services/translate.js")), "the retired translation service must be gone, not merely unused");
 assert.ok(editorJs.includes("app.state.maskVisible = Number(event.target.value) >= 50") && editorJs.includes("app.state.maskVisible = app.state.maskVisible === false") && editorJs.includes('node("opacity-target-label").textContent = masking ? t("蒙版层显示（0 或 100）"'), "inside local redraw the eye and the slider must drive the mask layer only");
 assert.ok(editorJs.includes('node("result-opacity").disabled = masking ? false') && editorJs.includes('visibility.disabled = masking ? false : !hasResult') && !editorJs.includes("成图固定不透明"), "local redraw must keep both controls usable and must never label the slider with the result opacity");
-assert.ok(canvasJs.includes("function captureComposition(overrides)") && canvasJs.includes("options.withResult ? { localMode: true } : null") && imageEngineJs.includes("if (masking) referenceOptions.withResult = true"), "a local redraw must reference the decorated result on purpose instead of inheriting the mode flag");
-const maskRecipeBody = canvasJs.slice(canvasJs.indexOf("function composeMask"), canvasJs.indexOf("async function exportSource"));
+assert.ok(canvasIoJs.includes("function captureComposition(overrides)") && canvasIoJs.includes("options.withResult ? { localMode: true, originalResult: true } : null") && imageEngineJs.includes("referenceOptions.withResult = true"), "a local redraw must reference the decorated result on purpose instead of inheriting the mode flag");
+// The picture a local redraw submits is the one that was generated, never the one
+// currently on screen: the colour adjustments are a view of it, and a reference with
+// them baked in is graded a second time on the way back, so the repainted area stops
+// matching its surroundings. A snapshot is the opposite case — it captures what is on
+// screen — so the two must not share a switch.
+assert.ok(canvasIoJs.includes("{ localMode: true, originalResult: true }") && canvasIoJs.includes("resultAdjustmentsEnabled: original ? false :"), "a local redraw must compose its reference from the ungraded picture");
+assert.ok(/function snapshotVisible\(\)[\s\S]{0,140}captureComposition\(\)/.test(canvasIoJs) && !/function snapshotVisible\(\)[\s\S]{0,140}originalResult/.test(canvasIoJs), "a snapshot must still capture the graded picture that is on screen");
+const maskRecipeBody = canvasIoJs.slice(canvasIoJs.indexOf("function composeMask"), canvasIoJs.indexOf("async function exportSource"));
 assert.ok(maskRecipeBody.includes('ctx.fillStyle = "black"') && !maskRecipeBody.includes("resultFilter") && !maskRecipeBody.includes("drawResult"), "the mask image must stay plain black and white: color adjustments must never reach it");
-assert.ok(storeJs.includes('"resultVisible", "maskVisible"') && canvasJs.includes('"resultVisible", "maskVisible"'), "the mask switch must survive a reload like the other view toggles");
+assert.ok(storeJs.includes('"resultVisible", "maskVisible"') && canvasIoJs.includes('"resultVisible", "maskVisible"'), "the mask switch must survive a reload like the other view toggles");
 const enterMaskBody = editorJs.slice(editorJs.indexOf("function enterMaskMode"), editorJs.indexOf("function exitMaskMode"));
 const exitMaskBody = editorJs.slice(editorJs.indexOf("function exitMaskMode"), editorJs.indexOf("function requestMaskTool"));
 assert.ok(enterMaskBody.includes("syncCanvas()") && exitMaskBody.includes("syncCanvas()"), "entering and leaving local redraw must repaint the borrowed result controls instead of waiting for a canvas change");
@@ -515,7 +576,7 @@ assert.match(componentsCss, /\.modal-actions\{[^}]*flex:0 0 auto/);
 assert.match(componentsCss, /\.work-settings-sheet\{height:88vh\}/);
 assert.ok(settingsJs.includes('sheetClass: "work-settings-sheet"') && settingsJs.includes('footerHtml: footer(') && !settingsJs.includes('mode: "center", contentClass: "work-settings-content"'), "artwork settings must use a bottom sheet with external fixed actions");
 assert.ok(!settingsJs.includes('range("colorStrength"') && settingsJs.includes('绘制稿保留强度'), "artwork settings must expose one preservation control without a separate color control");
-assert.ok(canvasJs.includes('"colorStrength"'), "color strength must be restored with artwork canvas state");
+assert.ok(canvasIoJs.includes('"colorStrength"'), "color strength must be restored with artwork canvas state");
 assert.ok(html.includes('id="stroke-opacity"'), "drawing tools must expose direct stroke opacity");
 assert.ok(html.includes('id="background-color"') && html.includes('<span aria-hidden="true">BG</span>') && editorCss.includes('.bg-control span{'), "background color control must show a centered BG label");
 assert.ok(html.includes('id="status-line"') && (html.match(/data-help-zh=/g) || []).length >= 20 && editorJs.includes('function bindActionHelp()'), "canvas, drawing, and generation actions must explain their effect in the shared status line");
@@ -560,7 +621,7 @@ assert.ok(editorJs.slice(editorJs.indexOf('app.events.on("result:changed"')).sli
 const generationDoneBody = editorJs.slice(editorJs.indexOf('app.events.on("generation:done"'), editorJs.indexOf('app.events.on("generation:progress"'));
 assert.ok(generationDoneBody.includes("canvas.commitResult()") && generationDoneBody.indexOf("canvas.commitResult()") > generationDoneBody.indexOf('result.slot === "upscale"'), "only a Fast or local-redraw result may join the undo journal; a render must stay out of it");
 assert.ok(storeJs.includes("snapshot.render = storedImage(app.state.renderResult)") && storeJs.includes("if (copy.render && copy.render.asset)") && storeJs.includes("render: snapshot && snapshot.render") && storeJs.includes("render.asset = await app.services.assets.persist(render.src, null)"), "the last render must be saved with the artwork and read back from its files on load");
-assert.ok(canvasJs.includes("state.renderResult = saved.render || null"), "loading an artwork must put its last render back into the state, or the saved render is unreachable");
+assert.ok(canvasIoJs.includes("state.renderResult = saved.render || null"), "loading an artwork must put its last render back into the state, or the saved render is unreachable");
 assert.ok(assetsJs.includes("snapshot && snapshot.render ? [snapshot.render] : []"), "the asset cleanup must keep the files of the artwork's last render");
 assert.ok(!/history/.test(storeJs), "the undo journal must stay in memory and never enter an artwork record");
 // Layering a group. The old mutator opened with `selectionIds().length !== 1`, so a group
@@ -583,7 +644,7 @@ assert.ok(!/\.art-preview canvas\{[^}]*object-fit:contain/.test(componentsCss), 
 const coveredBody = canvasJs.slice(canvasJs.indexOf("function drawCovered"), canvasJs.indexOf("function drawImageObject"));
 assert.match(coveredBody, /Math\.max\(/, "filling a frame means scaling by the larger of the two ratios");
 assert.ok(!coveredBody.includes("Math.min("), "drawCovered must not quietly behave like drawContained");
-const thumbnailBody = canvasJs.slice(canvasJs.indexOf("async function thumbnail"), canvasJs.indexOf("app.components.canvas = {"));
+const thumbnailBody = canvasIoJs.slice(canvasIoJs.indexOf("async function thumbnail"), canvasIoJs.indexOf("\n    return {\n      maskStrokes:"));
 assert.ok(thumbnailBody.includes("drawCovered(ctx, result, size, size)") && !thumbnailBody.includes("drawContained(ctx, result"), "the thumbnail bitmap must fill its own square too, or a non-square render comes back as a band inside the card");
 // The history card is drawn from the artwork's cover: the last generated picture, held as
 // a reference into Haminn's file store. Reaching that needs four things at once, and
@@ -597,7 +658,7 @@ assert.ok(storeJs.includes("cover: snapshot && snapshot.cover ?"), "the cover mu
 assert.ok(storeJs.includes("copy.cover.src = await app.services.assets.resolve(copy.cover.asset)"), "restoring an artwork must resolve the cover's file reference");
 const referencesBody = assetsJs.slice(assetsJs.indexOf("function references("), assetsJs.indexOf("async function cleanup("));
 assert.ok(referencesBody.includes("snapshot.cover"), "cleanup must treat the cover as a reference, or the card's chunks are reclaimed the first time anything else about the artwork changes");
-assert.ok(canvasJs.includes("state.cover = saved.cover || null"), "loading an artwork must bring its cover back, including one whose result was cleared");
+assert.ok(canvasIoJs.includes("state.cover = saved.cover || null"), "loading an artwork must bring its cover back, including one whose result was cleared");
 assert.match(thumbnailBody, /if \(saved\.cover && saved\.cover\.asset\) \{[\s\S]*?if \(saved\.result && saved\.result\.asset\)/, "the card must try the cover before the result, for a cover is the newer picture by definition");
 // The history list has to stay usable with a few hundred works, and on this host that is a
 // limit problem twice over. Cards must arrive a page at a time, and covers must be fetched
@@ -629,7 +690,19 @@ const scriptOrder = references.filter(value => value.endsWith(".js"));
 assert.equal(scriptOrder[0], "./app/core/namespace.js");
 assert.ok(scriptOrder.indexOf("./app/core/runtime.js") < scriptOrder.indexOf("./app/services/assets.js"));
 assert.ok(scriptOrder.indexOf("./app/core/drawing.js") < scriptOrder.indexOf("./app/components/canvas.js"));
+// The generation half of the canvas is a file of its own and the drawing half builds
+// against it, so it has to be in place first — in the page and in every test loader.
+assert.ok(scriptOrder.indexOf("./app/components/canvas-io.js") < scriptOrder.indexOf("./app/components/canvas.js"), "the generation half of the canvas must be loaded before the half that builds on it");
 assert.equal(scriptOrder.at(-1), "./app/app.js");
+// The same order is required of every test that loads the canvas, and it is read off the
+// directory rather than listed, so a test written later cannot be the one that forgets.
+for (const entry of fs.readdirSync(path.join(root, "tests"))) {
+  if (!entry.endsWith(".test.mjs")) continue;
+  const body = fs.readFileSync(path.join(root, "tests", entry), "utf8");
+  if (!body.includes('load("app/components/canvas.js")')) continue;
+  const generation = body.indexOf('load("app/components/canvas-io.js")');
+  assert.ok(generation >= 0 && generation < body.indexOf('load("app/components/canvas.js")'), `tests/${entry} must load the generation half of the canvas before the half that builds on it`);
+}
 
 const sourceFiles = [];
 function walk(directory) {
@@ -658,6 +731,9 @@ childProcess.execFileSync(process.execPath, [path.join(root, "tests/assets.test.
 childProcess.execFileSync(process.execPath, [path.join(root, "tests/layer.test.mjs")], { stdio: "inherit" });
 childProcess.execFileSync(process.execPath, [path.join(root, "tests/rotation.test.mjs")], { stdio: "inherit" });
 childProcess.execFileSync(process.execPath, [path.join(root, "tests/cover.test.mjs")], { stdio: "inherit" });
+childProcess.execFileSync(process.execPath, [path.join(root, "tests/mask.test.mjs")], { stdio: "inherit" });
+childProcess.execFileSync(process.execPath, [path.join(root, "tests/platform.test.mjs")], { stdio: "inherit" });
+childProcess.execFileSync(process.execPath, [path.join(root, "tests/reference.test.mjs")], { stdio: "inherit" });
 if (!process.argv.includes("--source-only") && fs.existsSync(path.join(root, "haminn-install.json"))) {
   childProcess.execFileSync("python3", [path.join(root, "tools/package.py"), "--check"], { stdio: "inherit" });
 }

@@ -3,7 +3,7 @@
 A family answers three questions and nothing else:
 
 1. which model roles it needs configured (:data:`ROLES` on each module);
-2. how (prompt, reference, size, steps, reference strength) become a graph;
+2. how (prompt, reference, size, step, reference strength) become a graph;
 3. what the reference-strength knob means *internally*.
 
 The last one is the reason this package exists.  The contract fixes only the
@@ -12,6 +12,15 @@ direction and the domain of that knob ("higher = closer to the reference",
 the reference is its own business.  Swapping a model is adding a module and one
 line below — not editing the HTTP layer, the discovery document and the config
 node.
+
+Two channels reach a family and they are deliberately not the same thing:
+
+* ``ext`` — the **model layer**: whatever the caller put in ``ext_params``, plus
+  this implementation's own reading of the keys it recognises.  A family
+  declares which keys it understands (:data:`EXT`), and the dispatcher hands it
+  exactly those.  The spec defines no field in here.
+* ``options`` — **deployment tuning**: values an operator writes in
+  ``hamdraw_settings.json`` on that one machine.  They never travel over HTTP.
 """
 
 from __future__ import annotations
@@ -32,13 +41,13 @@ FAMILIES: dict[str, Any] = {
 def get(name: str) -> Any:
     module = FAMILIES.get(str(name or "").strip())
     if module is None:
-        raise ValueError("unsupported_capability")
+        raise ValueError("unsupported_category")
     return module
 
 
-def _options(module: Any, values: dict[str, Any]) -> dict[str, Any]:
-    """Hand a family only the extra knobs it declares it takes."""
-    return {key: values[key] for key in getattr(module, "OPTIONS", ()) if key in values}
+def _declared(module: Any, attribute: str, values: dict[str, Any]) -> dict[str, Any]:
+    """Hand a family only the knobs it declared, and nothing else."""
+    return {key: values[key] for key in getattr(module, attribute, ()) if key in values}
 
 
 def build(
@@ -49,40 +58,43 @@ def build(
     image: str,
     mask: str = "",
     prompt: str = "",
-    negative_prompt: str = "",
     seed: int = 0,
-    steps: int,
     size: list[int] | tuple[int, int],
     ref_strength: float,
-    grow_mask_by: int | None = None,
+    ext: dict[str, Any] | None = None,
     options: dict[str, Any] | None = None,
     filename_prefix: str = "hamdraw/hamdraw",
 ) -> dict[str, Any]:
     """Build the graph for one already-validated request.
 
-    ``spec`` comes from :func:`hamdraw_chp.capabilities.spec_of`, so the
-    enumerations were checked before anything here runs; this function's only
-    job is picking the family and shaping the arguments.
+    ``spec`` comes from the category table, so the category and the resolution
+    were checked before anything here runs; this function's only job is picking
+    the family and shaping the arguments.
+
+    The step count is read from ``ext`` here rather than in the HTTP layer
+    because the enumeration belongs to the category, and the default belongs to
+    it too (``fast`` 8, ``inpaint`` 6, …).  An unknown or out-of-range step is
+    still refused — that is this implementation's behaviour for the one
+    extension key it recognises, and the spec's error table says so.
     """
+    from .. import capabilities as capabilities_module
+
     module = get(spec["family"])
-    masked = bool(spec["needs"].get("mask"))
-    if grow_mask_by is None:
-        grow_mask_by = int(spec["defaults"].get("grow_mask_by") or 0)
+    known = _declared(module, "EXT", dict(ext or {}))
     return module.build(
         models=dict(models or {}),
         image=str(image),
-        masked=masked,
-        mask=str(mask or "") if masked else "",
+        masked=bool(spec["needs"].get("mask")),
+        mask=str(mask or "") if spec["needs"].get("mask") else "",
         prompt=str(prompt or ""),
-        negative_prompt=str(negative_prompt or ""),
+        negative_prompt=str(known.get("negative_prompt") or ""),
         seed=int(seed),
-        steps=int(steps),
+        step=capabilities_module.validate_step(str(spec["category"]), known.get("step")),
         size=(int(size[0]), int(size[1])),
         sampling=dict(sampling or {}),
         ref_strength=float(ref_strength),
-        grow_mask_by=int(grow_mask_by),
         filename_prefix=str(filename_prefix),
-        **_options(module, dict(options or {})),
+        **_declared(module, "OPTIONS", dict(options or {})),
     )
 
 

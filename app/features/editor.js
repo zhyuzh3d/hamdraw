@@ -118,7 +118,7 @@
     if (!hasResultImage()) return false;
     maskMode = true; app.state.maskMode = true;
     app.services.imageEngine.stopAuto();
-    status(t("局部模式：涂红要改的区域，再点「描述」写这一块要改成什么", "Local mode: mark the area in red, then describe what it should become"));
+    status(t("直接屏幕绘制，然后用局部提示词修改绘制的区域", "Draw straight on the screen, then use the local prompt to change the drawn area"));
     // Entering local mode changes what the eye and the slider mean, so they are
     // repainted here instead of waiting for a canvas change that may never come.
     syncCanvas();
@@ -134,6 +134,16 @@
     syncCanvas();
   }
   function requestMaskTool() {
+    // The tool button is a switch like the brush and the pencil: a second tap puts
+    // the mask away and hands the canvas back to the select tool, instead of
+    // re-entering a mode that is already open.
+    if (maskMode && app.state.tool === "mask") {
+      setTool("select");
+      // Leaving local mode already says what happened to the marks when there are
+      // any; this is for the tap that has nothing to report but the way out.
+      if (!canvas.hasMask()) status(t("已退出局部工具，回到选择工具", "Left the local tool: select is active again"));
+      return;
+    }
     if (!hasResultImage()) { status(t("先用「快速」或随机按钮生成成图，再标记要改的局部", "Generate a result with Fast or the dice first, then mark the area to change")); ui.toast(t("还没有成图，不能使用局部", "No result yet. Local mode is unavailable"), "error"); return; }
     setTool("mask");
   }
@@ -162,7 +172,7 @@
     node("local-prompt").classList.toggle("is-placeholder", !localPrompt);
   }
   function editLocalPrompt() {
-    var root = ui.open({ mode: "center", title: t("局部重绘描述", "Local change description"), html: '<label class="field"><span>' + t("这一块要改成什么", "What should this area become") + '</span><textarea id="local-prompt-input" rows="3" maxlength="400"></textarea></label><p class="field-help">' + t("只提交这一句,不带顶部的画面描述；中英文都行,写中文由插件在提交那一刻自动译成英文。", "Only this sentence is submitted, without the artwork description. Chinese or English both work; the plugin translates a Chinese one as the job is submitted.") + '</p><div class="button-row"><button class="button button-secondary" data-cancel>' + t("取消", "Cancel") + '</button><button class="button button-primary" data-save>' + t("保存", "Save") + '</button></div>' });
+    var root = ui.open({ mode: "center", title: t("局部重绘描述", "Local change description"), html: '<label class="field"><span>' + t("这一块要改成什么", "What should this area become") + '</span><textarea id="local-prompt-input" rows="3" maxlength="400"></textarea></label><p class="field-help">' + t("只提交这一句,不带顶部的画面描述；英文可以获得更佳效果,写中文由插件在提交那一刻自动译成英文。", "Only this sentence is submitted, without the artwork description. English works better; the plugin translates a Chinese one as the job is submitted.") + '</p><div class="button-row"><button class="button button-secondary" data-cancel>' + t("取消", "Cancel") + '</button><button class="button button-primary" data-save>' + t("保存", "Save") + '</button></div>' });
     var input = root.querySelector("#local-prompt-input");
     input.value = String(app.state.localPrompt || "");
     input.placeholder = t("例如：把这里改成一只白色的猫", "e.g. turn this area into a white cat");
@@ -175,7 +185,7 @@
     });
   }
   function editPrompt() {
-    var root = ui.open({ mode: "center", title: t("画面描述", "Image description"), html: '<label class="field"><span>' + t("想画成什么样", "What the picture should look like") + '</span><textarea id="prompt-input" rows="3"></textarea></label><p class="field-help">' + t("中英文都行,写中文由插件在提交那一刻自动译成英文。", "Chinese or English both work; the plugin translates a Chinese one as the job is submitted.") + '</p><div class="button-row"><button class="button button-secondary" data-cancel>' + t("取消", "Cancel") + '</button><button class="button button-primary" data-save>' + t("保存", "Save") + '</button></div>' });
+    var root = ui.open({ mode: "center", title: t("画面描述", "Image description"), html: '<label class="field"><span>' + t("想画成什么样", "What the picture should look like") + '</span><textarea id="prompt-input" rows="3"></textarea></label><p class="field-help">' + t("英文可以获得更佳效果；写中文由插件在提交那一刻自动译成英文。", "English works better; the plugin translates a Chinese one as the job is submitted.") + '</p><div class="button-row"><button class="button button-secondary" data-cancel>' + t("取消", "Cancel") + '</button><button class="button button-primary" data-save>' + t("保存", "Save") + '</button></div>' });
     var input = root.querySelector("#prompt-input");
     input.value = String(app.state.prompt || "");
     input.placeholder = t("例如：一只蓝色的水晶鸟飞过雪山,清晨的光", "e.g. a blue crystal bird over a snowy mountain at dawn");

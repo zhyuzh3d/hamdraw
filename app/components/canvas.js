@@ -1359,236 +1359,26 @@
     app.events.emit("tool", "select");
   }
   function isMaskStroke(object) { return Boolean(object && object.type === "stroke" && object.tool === "mask"); }
-  function maskStrokes() { return state.objects.filter(isMaskStroke); }
-  function hasMask() { return state.objects.some(isMaskStroke); }
-  function contentCount() { return state.objects.length - maskStrokes().length; }
-  function clearMask() {
-    var removed = 0;
-    for (var index = state.objects.length - 1; index >= 0; index -= 1) {
-      if (!isMaskStroke(state.objects[index])) continue;
-      state.objects.splice(index, 1); removed += 1;
-    }
-    if (!removed) return 0;
-    setSelection([]); render(); commit();
-    return removed;
-  }
-  async function drawObjectList(targetContext, includeMask, opacity, objects) {
-    var layer = document.createElement("canvas"); layer.width = WIDTH; layer.height = WIDTH;
-    var layerContext = layer.getContext("2d");
-    objects = objects || state.objects;
-    for (var index = 0; index < objects.length; index += 1) {
-      var object = objects[index];
-      if (object.type === "stroke") {
-        if (object.tool === "mask" && !includeMask) continue;
-        drawStroke(layerContext, object, false);
-      } else {
-        var image = await loadImage(object.src || object.url, false);
-        if (image) drawPicture(layerContext, object, image);
-      }
-    }
-    targetContext.save(); targetContext.globalAlpha = opacity == null ? 1 : opacity; targetContext.drawImage(layer, 0, 0); targetContext.restore();
-  }
-  function captureComposition(overrides) {
-    var currentResultOpacity = Number(state.resultOpacity);
-    if (!Number.isFinite(currentResultOpacity)) currentResultOpacity = 1;
-    // A local-redraw caller can assert the mode instead of inheriting it, so its
-    // reference image can never silently fall back to the bare sketch.
-    var masking = overrides && overrides.localMode != null ? Boolean(overrides.localMode) : Boolean(state.maskMode);
-    return {
-      background: state.background || "#ffffff",
-      localMode: masking,
-      overlayGenerate: masking ? false : Boolean(state.overlayGenerate),
-      resultOpacity: masking ? 1 : Math.max(0, Math.min(1, currentResultOpacity)),
-      layerOpacity: masking ? 0 : Math.max(0, Math.min(1, Number(state.layerOpacity == null ? 1 : state.layerOpacity))),
-      resultVisible: masking ? true : state.resultVisible !== false,
-      resultSrc: state.result && state.result.src || "",
-      resultBrightness: state.resultBrightness,
-      resultContrast: state.resultContrast,
-      resultSaturation: state.resultSaturation,
-      resultHue: state.resultHue,
-      resultGlow: state.resultGlow,
-      resultClarity: state.resultClarity,
-      resultAdjustmentsEnabled: state.resultAdjustmentsEnabled !== false,
-      objects: masking ? [] : app.drawing.cloneObjects(state.objects)
-    };
-  }
-  async function drawCompositionResult(ctx, composition) {
-    if (!composition.resultVisible || !composition.resultSrc) return;
-    var result = await loadImage(composition.resultSrc, false);
-    if (!result) return;
-    ctx.save(); ctx.globalAlpha = composition.resultOpacity; drawResult(ctx, result, WIDTH, WIDTH, true, composition); ctx.restore();
-  }
-  async function renderComposition(composition, targetSize, visibleSnapshot) {
-    var output = document.createElement("canvas");
-    output.width = targetSize; output.height = targetSize;
-    var ctx = output.getContext("2d");
-    if (targetSize !== WIDTH) ctx.scale(targetSize / WIDTH, targetSize / WIDTH);
-    ctx.fillStyle = composition.background;
-    ctx.fillRect(0, 0, WIDTH, WIDTH);
-    if (composition.overlayGenerate) {
-      await drawCompositionResult(ctx, composition);
-      await drawObjectList(ctx, false, composition.layerOpacity, composition.objects);
-    } else {
-      await drawObjectList(ctx, false, 1, composition.objects);
-      if (visibleSnapshot || composition.localMode) await drawCompositionResult(ctx, composition);
-    }
-    return output;
-  }
-  async function snapshotVisible() {
-    var composition = captureComposition();
-    var output = await renderComposition(composition, WIDTH, true), src = output.toDataURL("image/png");
-    await loadImage(src, false);
-    var object = { id: app.utils.id("image"), type: "image", url: src, src: src, logicalFileId: "", name: "HamDraw snapshot", x: 0, y: 0, width: WIDTH, height: WIDTH };
-    state.objects.push(object); setSelection([object.id]); state.tool = "select";
-    render(); commit(); app.events.emit("tool", "select");
-    return object;
-  }
-  function composeInput(options) {
-    options = options || {};
-    var targetSize = Number(options.size) || WIDTH;
-    // withResult marks a local redraw: its reference has to be the decorated
-    // result, never the bare sketch, so the mode is asserted rather than inherited.
-    var composition = captureComposition(options.withResult ? { localMode: true } : null);
-    return composeWithinBudget(composition, targetSize, options.withResult === true, options);
-  }
-  function composeVisibleInput(options) {
-    options = options || {};
-    var targetSize = Number(options.size) || WIDTH;
-    return composeWithinBudget(captureComposition(), targetSize, true, options);
-  }
-  function encodeCanvas(output, options) {
-    var mime = options.mime || "image/png", quality = Number(options.quality) || 0.82;
-    var encoded = output.toDataURL(mime, quality), maxBytes = Number(options.maxBytes) || 0;
-    // maxBytes counts the characters of the encoded data URL, because that is
-    // exactly what ends up inside the request body.
-    while (maxBytes && mime === "image/jpeg" && encoded.length > maxBytes && quality > 0.45) {
-      quality = Math.max(0.45, quality - 0.1); encoded = output.toDataURL(mime, quality);
-    }
-    return encoded;
-  }
-  // Quality alone cannot always reach the budget (a photo-like canvas stays
-  // large in any JPEG quality), so the size steps down too.
-  async function composeWithinBudget(composition, targetSize, visible, options) {
-    var size = targetSize, output = await renderComposition(composition, size, visible);
-    var encoded = encodeCanvas(output, options), maxBytes = Number(options.maxBytes) || 0;
-    for (var attempt = 0; maxBytes && encoded.length > maxBytes && attempt < 6 && size > 256; attempt++) {
-      size = Math.max(256, Math.round(size * 0.8));
-      output = await renderComposition(composition, size, visible);
-      encoded = encodeCanvas(output, options);
-    }
-    return encoded;
-  }
-  function composeMask(openAiAlpha) {
-    if (!hasMask()) return null;
-    var output = document.createElement("canvas");
-    output.width = WIDTH; output.height = WIDTH;
-    var ctx = output.getContext("2d");
-    if (openAiAlpha) {
-      ctx.fillStyle = "white"; ctx.fillRect(0, 0, WIDTH, WIDTH);
-      ctx.globalCompositeOperation = "destination-out";
-    } else {
-      ctx.fillStyle = "black"; ctx.fillRect(0, 0, WIDTH, WIDTH);
-      ctx.strokeStyle = "white";
-    }
-    state.objects.filter(function (object) { return object.type === "stroke" && (object.tool === "mask" || object.tool === "eraser"); }).forEach(function (object) {
-      var copy = { points: object.points, width: object.width, color: !openAiAlpha && object.tool === "eraser" ? "black" : "white", opacity: 1, tool: openAiAlpha && object.tool === "mask" ? "eraser" : "brush" };
-      drawStroke(ctx, copy, false);
-    });
-    return output.toDataURL("image/png");
-  }
-  async function exportSource(src, logicalFileId, baseName) {
-    var bridge = app.platform.haminn.current();
-    if (bridge && logicalFileId) return bridge.files.export({ logicalFileId: logicalFileId });
-    if (bridge) {
-      var file = await writeImageFile(bridge, src, (baseName || "HamDraw-canvas") + "-" + Date.now() + ".png", "image/png");
-      try { return await bridge.files.export({ logicalFileId: file.logicalFileId }); }
-      finally { await bridge.files.delete({ logicalFileId: file.logicalFileId }).catch(function () {}); }
-    }
-    var anchor = document.createElement("a");
-    anchor.download = (baseName || "hamdraw-canvas") + "-" + new Date().toISOString().replace(/[:.]/g, "-") + ".png";
-    anchor.href = src;
-    document.body.appendChild(anchor); anchor.click(); anchor.remove();
-  }
-  //: The download has to be the picture, so the picture's own bytes are what get
-  //: written. It used to be wrapped in an SVG document, because `writeText` was the
-  //: only writer then and a text call cannot carry a JPEG — the file that landed in the
-  //: gallery was a `.svg` that almost nothing else would open. The file library takes
-  //: real bytes through a chunked writer, so the wrapper has no reason to exist.
-  function dataUrlBytes(src) {
-    var text = String(src), comma = text.indexOf(",");
-    if (comma < 0 || text.slice(0, comma).indexOf("base64") < 0) throw new Error(app.i18n.text("画布数据不是可导出的图片字节", "The canvas data is not exportable image bytes"));
-    var binary = atob(text.slice(comma + 1)), bytes = new Uint8Array(binary.length);
-    for (var index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-    return bytes;
-  }
-  async function writeImageFile(bridge, src, name, mime) {
-    var bytes = dataUrlBytes(src), write = await bridge.files.beginWrite({ name: name, mime: mime });
-    try {
-      for (var at = 0; at < bytes.length; at += write.maxChunkBytes) {
-        var slice = bytes.subarray(at, at + write.maxChunkBytes), binary = "";
-        for (var index = 0; index < slice.length; index += 1) binary += String.fromCharCode(slice[index]);
-        await bridge.files.appendBytes({ writeId: write.writeId, chunkBase64: btoa(binary) });
-      }
-      return await bridge.files.finishWrite({ writeId: write.writeId });
-    } catch (error) {
-      await bridge.files.abortWrite({ writeId: write.writeId }).catch(function () {});
-      throw error;
-    }
-  }
-  async function exportVisibleCanvas() {
-    var src = await composeVisibleInput({ size: WIDTH, mime: "image/png" });
-    return exportSource(src, "", "HamDraw-canvas");
-  }
-  async function imageDimensions(src) {
-    var image = await loadImage(src, false);
-    return image ? { width: image.naturalWidth, height: image.naturalHeight } : { width: 0, height: 0 };
-  }
-  function load(saved) {
-    if (!saved) return;
-    ["prompt", "localPrompt", "negativePrompt", "background", "color", "size", "opacity", "strength", "colorStrength", "seed", "seedLocked", "autoDelayMs", "autoGenerate", "overlayGenerate", "resultOpacity", "layerOpacity", "resultVisible", "maskVisible", "resultBrightness", "resultContrast", "resultSaturation", "resultHue", "resultGlow", "resultClarity", "resultAdjustmentsEnabled", "workId", "workTitle"].forEach(function (key) {
-      if (saved[key] !== undefined) state[key] = saved[key];
-    });
-    state.objects = saved.objects || [];
-    //: The containers come back with the objects. A member only names its container, so a record
-    //: opened without its table would draw every grouped object upright. A record written before
-    //: containers were nodes names no table at all and carries the group inside each member.
-    state.groups = saved.groups && Object.keys(saved.groups).length ? app.drawing.cloneGroups(saved.groups) : app.drawing.groupsFromMembers(state.objects);
-    state.result = saved.result || null;
-    // The last render is part of the artwork, so it comes back with it.
-    state.renderResult = saved.render || null;
-    // So does the cover: it is the last generated picture and the history card draws it,
-    // which is why it is restored even for a record whose result was cleared.
-    state.cover = saved.cover || null;
-    setSelection([]);
-    state.objects.forEach(function (object) {
-      if (object.type === "image") { object.src = object.src || object.url; loadImage(object.src, true); }
-    });
-    render(); resetHistory();
-  }
-  async function thumbnail(saved, target) {
-    var size = 768, ctx = target.getContext("2d"); target.width = 288; target.height = 288;
-    ctx.scale(288 / size, 288 / size); ctx.fillStyle = saved.background || "#fff"; ctx.fillRect(0, 0, size, size);
-    // The card shows the cover — the last generated picture — before anything else, and
-    // it is drawn from the filed reference rather than from whatever the sketch still
-    // holds. A cover whose files have gone falls through instead of blanking the card.
-    if (saved.cover && saved.cover.asset) {
-      try {
-        var coverSrc = await app.services.assets.resolve(saved.cover.asset), picture = await loadImage(coverSrc, false);
-        if (picture) { drawCovered(ctx, picture, size, size); return; }
-      } catch (_) {}
-    }
-    if (saved.result && saved.result.asset) {
-      var src = await app.services.assets.resolve(saved.result.asset), result = await loadImage(src, false);
-      if (result) drawCovered(ctx, result, size, size);
-      return;
-    }
-    var layer = document.createElement("canvas"); layer.width = size; layer.height = size; var layerCtx = layer.getContext("2d");
-    for (var object of saved.objects || []) {
-      if (object.type === "stroke") { if (object.tool !== "mask") drawStroke(layerCtx, object, false); }
-      else { var image = await loadImage(object.asset ? await app.services.assets.resolve(object.asset) : object.url, false); if (image) drawPicture(layerCtx, object, image); }
-    }
-    ctx.drawImage(layer, 0, 0);
-  }
+  //: The generation half — what goes to the model and to the file store, the mask,
+  //: the budget and the download — lives in app/components/canvas-io.js, because this
+  //: file had grown past 1700 lines. It is handed the paint helpers it needs rather
+  //: than reaching into this closure, so the two halves cannot call each other's
+  //: internals, and its functions are re-exported below unchanged.
+  var io = app.components.canvasIo.create({
+    state: state,
+    WIDTH: WIDTH,
+    isMaskStroke: isMaskStroke,
+    drawStroke: function () { return drawStroke.apply(null, arguments); },
+    drawPicture: function () { return drawPicture.apply(null, arguments); },
+    drawResult: function () { return drawResult.apply(null, arguments); },
+    drawCovered: function () { return drawCovered.apply(null, arguments); },
+    loadImage: function () { return loadImage.apply(null, arguments); },
+    setSelection: function () { return setSelection.apply(null, arguments); },
+    render: function () { return render.apply(null, arguments); },
+    commit: function () { return commit.apply(null, arguments); },
+    resetHistory: function () { return resetHistory.apply(null, arguments); }
+  });
+
 
   app.components.canvas = {
     init: init,
@@ -1609,19 +1399,21 @@
     canUngroupSelected: canUngroupSelected,
     duplicateSelected: duplicateSelected,
     addImage: addImage,
-    snapshotVisible: snapshotVisible,
-    composeInput: composeInput,
-    composeVisibleInput: composeVisibleInput,
-    composeMask: composeMask,
-    exportVisibleCanvas: exportVisibleCanvas,
-    exportSource: exportSource,
-    imageDimensions: imageDimensions,
-    load: load,
-    thumbnail: thumbnail,
-    hasMask: hasMask,
-    contentCount: contentCount,
-    maskStrokes: maskStrokes,
-    clearMask: clearMask,
+    snapshotVisible: io.snapshotVisible,
+    composeInput: io.composeInput,
+    composeVisibleInput: io.composeVisibleInput,
+    composeMask: io.composeMask,
+    maskFeatherRadius: io.maskFeatherRadius,
+    maskChars: io.maskChars,
+    exportVisibleCanvas: io.exportVisibleCanvas,
+    exportSource: io.exportSource,
+    imageDimensions: io.imageDimensions,
+    load: io.load,
+    thumbnail: io.thumbnail,
+    hasMask: io.hasMask,
+    contentCount: io.contentCount,
+    maskStrokes: io.maskStrokes,
+    clearMask: io.clearMask,
     selectionHandles: function () { return selectionHandles(selectedObjects()); },
     selectionFrame: function () { return selectionFrame(selectedObjects()); },
     resultFilter: resultFilter,

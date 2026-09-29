@@ -9,7 +9,7 @@
 - 本地优先：作品、配置、图片引用全在本机 happ 隔离数据区，不内置任何平台 API Key。模型由用户自己配置。
 - 三个任务槽位互相独立：快速生图 / 局部重绘 / 高清渲染。画幅、步数、参考强度由所选接口的内置规格决定，不由用户填。
 - 绘图内核：原生 Canvas 矢量笔触（铅笔 / 涂色 / 擦除 / 框选 / 成组 / 移动 / 复制 / 图层 / 局部蒙版 / 撤销重做），历史快照保存提示词与画面参数。
-- 接口模式：CHP（ComfyUI Hamdraw Plugin CHP，推荐）/ OpenAI Images 兼容 / Stable Diffusion WebUI · Forge / Stability AI v2beta。CHP 走 A1X 掌机的 ComfyUI，插件源码在本仓 `comfyui-plugin/`。
+- 接口模式：CHP 插件（ComfyUI Haminn Protocol，推荐）/ OpenAI Images 兼容 / Stable Diffusion WebUI · Forge / Stability AI v2beta。CHP 走 A1X 掌机的 ComfyUI，插件源码在本仓 `comfyui-plugin/`（**CHP 是协议，它是参考实现**）。
 
 ## 目录结构
 
@@ -21,7 +21,7 @@ app/app.js            启动与装配
 app/core/             纯逻辑，不碰 DOM 与宿主：namespace / runtime / i18n / utils / drawing
 app/platform/         haminn.js —— Bridge 与网络的唯一出口
 app/services/         image-engine 生图编排 / providers 供应商适配 / assets 图片编解码
-                      store 持久化 / translate 提示词翻译
+                      store 持久化
 app/components/       canvas / settings / gallery / render-preview / ui：DOM 与语义事件
 app/features/         editor 交互编排 / self-test 自检
 styles/               tokens / base / components / editor
@@ -37,7 +37,11 @@ styles/               tokens / base / components / editor
 - 所有模型请求必须经过 `app/platform/haminn.js`。公网服务用 HTTPS，HTTP 只允许可信局域网地址。
 - 图片字节、Base64、data URL **禁止写入 `haminn.data`**，只存文件引用；release 目录不存用户资产。
 - API Key 只在用户明确保存后写入本 happ 隔离数据，界面始终默认遮罩，不写入源码、日志、文档或测试。
-- 提示词必须是英文。中文由 `services/translate.js` 译成英文再提交；没译成功时每次生图都会提示用户检查翻译模型设置。生图路径只读翻译缓存，绝不触发网络。
+- **提示词原样提交，客户端不做任何翻译**（`services/` 下没有、也不再有 translate 模块）。要不要英文由服务端的规则决定：
+  CHP 插件的 `rules[].prompt.language` 为 `"en"` 的类别（SD1.5 + CLIP-L 那几套 fast / inpaint / upscale）
+  由**插件在提交那一刻**自动把中文译成英文并缓存；为 `"any"` 的类别（Qwen3-VL 的 render）中文原样喂进编码器；
+  OpenAI / Stability 那侧本来就吃英文。**所以界面建议写英文**：不过翻译这一道，就没有译错的余地；
+  写中文也不会被拒，插件负责译。生图路径全程只读、绝不触发网络。
 - 局部蒙版笔迹留在 `state.objects` 里，退出局部只是隐藏而不是清除；只有扫把按钮清空。
 - 别把 happ 业务逻辑塞进宿主或 HaminnUI；宿主能力不足时先改合同方 `haminnapp`，再回来消费。
 

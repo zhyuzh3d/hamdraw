@@ -23,7 +23,7 @@ HamDraw 在 HaminnApp 中直接运行原生 HTML、CSS 与 JavaScript，不依�
 
 每次生成仍重新合成当前画布，保证参考图不是旧缓存。蒙版只为实际消费它的 OpenAI Images、SD WebUI 或 CHP 接口编码；Stability 和高质量渲染不再做无用的双份 PNG 蒙版编码。
 
-参考图按宿主消息预算编码为 JPEG，并按剩余空间逐步缩小画幅（`composeWithinBudget`）。这不是画质取舍而是硬约束：宿主会丢弃超过 256 KiB 的页面消息，而且不会回错，页面只能等到自己的超时。预算、蒙版预留和最终校验分别落在 `app/platform/haminn.js`（`messageChars`、`checkBudget`）、`app/services/image-engine.js`（`referenceOptions`）和 `app/components/canvas.js`（`composeWithinBudget`）。
+参考图按宿主消息预算编码为 JPEG，并按剩余空间逐步缩小画幅（`composeWithinBudget`）。这不是画质取舍而是硬约束：宿主会丢弃超过 256 KiB 的页面消息，而且不会回错，页面只能等到自己的超时。预算、蒙版预留和最终校验分别落在 `app/platform/haminn.js`（`messageChars`、`checkBudget`）、`app/services/image-engine.js`（`referenceOptions`）和 `app/components/canvas-io.js`（`composeWithinBudget`）。
 
 ## 诊断与回归
 

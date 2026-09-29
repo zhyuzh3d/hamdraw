@@ -32,16 +32,16 @@ ENVIRONMENT_TRANSLATE_URL = "HAMDRAW_TRANSLATE_URL"
 ENVIRONMENT_TRANSLATE_MODEL = "HAMDRAW_TRANSLATE_MODEL"
 ENVIRONMENT_TRANSLATE_DISABLED = "HAMDRAW_TRANSLATE_DISABLED"
 
-#: Driven by the capability table, so a capability added there is configurable
+#: Driven by the category table, so a category added there is configurable
 #: here without a second list to keep in step.
-TASKS: tuple[str, ...] = tuple(capabilities.ids())
+TASKS: tuple[str, ...] = tuple(capabilities.categories())
 
 #: Files a non-checkpoint task needs.  Qwen-Image 2.1 is published as three
 #: separate files (diffusion model, text encoder, VAE) instead of one
 #: checkpoint, so those tasks name each of them here rather than a checkpoint.
 MODEL_ROLES = ("unet", "clip", "vae")
 
-#: The checkpoint the plugin suggests for the realtime capability.  A suggestion,
+#: The checkpoint the plugin suggests for the realtime category.  A suggestion,
 #: not a requirement — the config node falls back to whatever is installed.
 RECOMMENDED_CHECKPOINT = "DreamShaper8_LCM.safetensors"
 
@@ -51,17 +51,13 @@ RECOMMENDED_CHECKPOINT = "DreamShaper8_LCM.safetensors"
 TRANSLATE_TIMEOUT_RANGE = (3.0, 120.0)
 TRANSLATE_MEMORY_RANGE = (0, 200000)
 
-#: A capability that was renamed still reads the key an older settings file used.
-#: New writes drop the old key, so the file migrates itself on the first save.
-RENAMED = {"render": "qwen"}
-
 DEFAULTS: dict[str, Any] = {
     "schema": SCHEMA,
     "password": "",
-    "checkpoints": {"quick": RECOMMENDED_CHECKPOINT, "inpaint": "", "upscale": "", "render": ""},
+    "checkpoints": {"fast": RECOMMENDED_CHECKPOINT, "inpaint": "", "upscale": "", "render": ""},
     "models": {"render": {"unet": "", "clip": "", "vae": ""}},
     "sampling": {
-        "quick": {"sampler": "lcm", "scheduler": "sgm_uniform", "cfg": 2.0},
+        "fast": {"sampler": "lcm", "scheduler": "sgm_uniform", "cfg": 2.0},
         "inpaint": {"sampler": "lcm", "scheduler": "sgm_uniform", "cfg": 2.0},
         "upscale": {"sampler": "lcm", "scheduler": "sgm_uniform", "cfg": 2.0},
         # A flow model sampled without classifier-free guidance (cfg 1.0), which
@@ -106,12 +102,6 @@ def _read() -> dict[str, Any]:
     return stored if isinstance(stored, dict) else {}
 
 
-def _keys(name: str) -> list[str]:
-    """Keys to try for one capability, legacy first so the current one wins."""
-    legacy = RENAMED.get(name)
-    return ([legacy] if legacy else []) + [name]
-
-
 def _number(value: Any, fallback: float, limits: tuple[float, float]) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return fallback
@@ -126,19 +116,14 @@ def _merge(base: dict[str, Any], stored: dict[str, Any]) -> dict[str, Any]:
     checkpoints = stored.get("checkpoints")
     if isinstance(checkpoints, dict):
         for name in TASKS:
-            for key in _keys(name):
-                value = checkpoints.get(key)
-                if isinstance(value, str):
-                    base["checkpoints"][name] = value.strip()
+            value = checkpoints.get(name)
+            if isinstance(value, str):
+                base["checkpoints"][name] = value.strip()
 
     models = stored.get("models")
     if isinstance(models, dict):
         for name in TASKS:
-            entry = None
-            for key in _keys(name):
-                candidate = models.get(key)
-                if isinstance(candidate, dict):
-                    entry = candidate
+            entry = models.get(name)
             if not isinstance(entry, dict):
                 continue
             slot = base["models"].setdefault(name, {})
@@ -150,11 +135,7 @@ def _merge(base: dict[str, Any], stored: dict[str, Any]) -> dict[str, Any]:
     sampling = stored.get("sampling")
     if isinstance(sampling, dict):
         for name in TASKS:
-            entry = None
-            for key in _keys(name):
-                candidate = sampling.get(key)
-                if isinstance(candidate, dict):
-                    entry = candidate
+            entry = sampling.get(name)
             if not isinstance(entry, dict):
                 continue
             for key in ("sampler", "scheduler"):
@@ -265,8 +246,6 @@ def update(**fields: Any) -> dict[str, Any]:
                 value = checkpoints.get(name)
                 if isinstance(value, str):
                     target[name] = value
-                if RENAMED.get(name):
-                    target.pop(RENAMED[name], None)
 
         models = fields.get("models")
         if isinstance(models, dict):
@@ -284,8 +263,6 @@ def update(**fields: Any) -> dict[str, Any]:
                     value = entry.get(role)
                     if isinstance(value, str):
                         slot[role] = value.strip()
-                if RENAMED.get(name):
-                    target.pop(RENAMED[name], None)
 
         sampling = fields.get("sampling")
         if isinstance(sampling, dict):
@@ -300,8 +277,6 @@ def update(**fields: Any) -> dict[str, Any]:
                 if not isinstance(slot, dict):
                     slot = target[name] = {}
                 slot.update(entry)
-                if RENAMED.get(name):
-                    target.pop(RENAMED[name], None)
 
         families = fields.get("families")
         if isinstance(families, dict):
@@ -347,34 +322,30 @@ def update(**fields: Any) -> dict[str, Any]:
 
 
 def checkpoint(task: str) -> str:
+    """That category's checkpoint, falling back to the ``fast`` slot when empty.
+
+    The fallback is what makes one configured checkpoint serve three categories
+    without the operator filling in the same name three times, and it is the
+    same value the graph would use — so a job submitted against it is not
+    refused as if a model were missing.
+    """
     settings = load()
-    value = ""
-    for key in _keys(task):
-        candidate = str(settings["checkpoints"].get(key) or "").strip()
-        if candidate:
-            value = candidate
+    value = str(settings["checkpoints"].get(str(task or "").strip()) or "").strip()
     if value:
         return value
-    return str(settings["checkpoints"].get("quick") or "").strip()
+    return str(settings["checkpoints"].get("fast") or "").strip()
 
 
 def model_files(task: str) -> dict[str, str]:
-    """The unet / clip / vae triple for a non-checkpoint capability (empty when unset).
+    """The unet / clip / vae triple for a non-checkpoint category (empty when unset).
 
-    Reads the old key as well, so an installation that was configured under the
-    capability's former name keeps working until the config node is queued once
-    and rewrites the file.
-
-    No fallback to another capability's files on purpose: mixing a text encoder
+    No fallback to another category's files on purpose: mixing a text encoder
     with a different diffusion model is not a configuration the graph can run,
     and silently substituting one would produce a confusing ``no_model`` much
     later instead of right here.
     """
     settings = load()
     stored = settings.get("models") or {}
-    entry: dict[str, Any] = {}
-    for key in _keys(str(task or "").strip().lower()):
-        candidate = stored.get(key)
-        if isinstance(candidate, dict):
-            entry = candidate
+    entry = stored.get(str(task or "").strip().lower())
+    entry = entry if isinstance(entry, dict) else {}
     return {role: str(entry.get(role) or "").strip() for role in MODEL_ROLES}

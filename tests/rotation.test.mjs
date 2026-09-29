@@ -48,6 +48,7 @@ function load(name) { vm.runInContext(fs.readFileSync(path.join(root, name), "ut
 const app = context.hamdraw;
 app.services.imageEngine = { schedule: () => {} };
 app.services.store = { scheduleCanvasSave: () => {} };
+load("app/components/canvas-io.js");
 load("app/components/canvas.js");
 const canvas = app.components.canvas;
 const drawing = app.drawing;

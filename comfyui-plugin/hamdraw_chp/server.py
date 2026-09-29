@@ -1,4 +1,4 @@
-"""The CHP HTTP API for the ComfyUI HamDraw plugin.
+"""The CHP HTTP API — the reference implementation of ComfyUI Haminn Protocol.
 
 Three kinds of endpoint, and nothing else:
 
@@ -11,37 +11,36 @@ Three kinds of endpoint, and nothing else:
     POST /chp/translate                   pre-translate a prompt         (Bearer)
 
 ``/chp/info`` is the one a client calls first, and it answers with the whole
-contract — the capabilities, the request schema they share, which model backs
-each one and whether it is installed, and whether the password that arrived was
-the right one.  It answers even when the password is wrong on purpose: knowing
-*what* a server can do should not require having already configured it, and one
-call then tells a client both "the address is right" and "the password is not".
-The contract itself is defined in ``plans/``; the table it is built from lives
-in :mod:`hamdraw_chp.capabilities`.
+contract — the rules (what shape of input each category takes), the abilities
+(which model files can serve them, and which canvases they can make), and
+whether the password that arrived was the right one.  It answers even when the
+password is wrong on purpose: knowing *what* a server can do should not require
+having already configured it, and one call then tells a client both "the address
+is right" and "the password is not".  The contract itself is defined in
+``plans/chp-spec.md``; the table it is built from lives in
+:mod:`hamdraw_chp.capabilities`.
 
 The paths never carry a version.  The protocol version travels in the document
 as ``spec``, so a client never has to guess a newer path, and a server may add
-capabilities and fields without breaking one that is already shipped: a client
-is required to ignore what it does not know.
+categories and fields without breaking one that is already shipped: a client is
+required to ignore what it does not know.
 
 Roots
 -----
-``/chp`` is the primary root.  ``/cvp`` — the root this plugin served before it
-was renamed — is registered as an **alias**: the same handlers, the same
-document shapes, the same answer.  It exists only so a client build that
-hardcoded the old root keeps working while it is being updated; nothing new
-should call it, and it can be dropped once no shipped build does.
-
-Nothing else is served.  The ``/hamdraw/v1`` projections that the pre-rename
-PoseGi called were removed together with PoseGi's migration: while a projection
-layer exists, every capability has two shapes to keep in step, and the only
-consumer was one client that has now moved.
+``/chp`` is the only root.  ``/cvp`` — the root this plugin served before it was
+renamed — is gone.  A client is required to read its addresses out of the
+document's ``endpoints``, so a client that hardcoded a root is precisely the
+client this version promises nothing to.  Nothing else is served either: the
+``/hamdraw/v1`` projections went the same way when their only consumer moved.
 
 Authentication
 --------------
 The password set in the ``HamDrawConfig`` node (or the ``HAMDRAW_PASSWORD``
-environment variable) protects every job endpoint.  It is sent as
-``Authorization: Bearer <password>``.  A wrong password answers ``401
+environment variable) protects every job endpoint.  A request that carries a
+body sends it in ``chp_params.password``; a ``GET``, and a ``POST`` with no body,
+send it as ``Authorization: Bearer <password>`` instead — a password has no
+business in a URL or a log line.  The header is still accepted everywhere, and
+so are ``Basic`` and ``X-HamDraw-Password``.  A wrong password answers ``401
 unauthorized`` and nothing is queued.  Leaving it empty disables the check and
 ``/chp/info`` says so through ``auth.required``.
 
@@ -51,7 +50,7 @@ them through the ordinary ``LoadImage`` node.
 
 Translation
 -----------
-A capability whose text encoder only reads English declares
+A category whose text encoder only reads English declares
 ``prompt.language: "en"``.  When such a job arrives with a prompt that is not
 pure ASCII, the server translates it itself — memory first, backend second, and
 the original text if both fail — so a client that knows nothing but how to POST
@@ -59,6 +58,15 @@ a job cannot feed a model something it cannot read.  A client may translate
 earlier and show the user the result; that is a recommendation, not a rule.
 Every answer says which of the two happened through ``prompt`` /
 ``prompt_source`` / ``translated``.
+
+Extension parameters
+--------------------
+Two channels, kept apart by *layer* rather than by who fills them in:
+``ext_params`` is the model layer (the spec defines no field in it at all — it
+is carried and echoed verbatim), ``chp_params`` is the CHP layer (today only
+``password``).  This implementation reads two keys of its own out of
+``ext_params``, ``step`` and ``negative_prompt``; that is its behaviour, not a
+term of the contract, and it is written down in this plugin's README.
 """
 
 from __future__ import annotations
@@ -85,7 +93,6 @@ from . import translate as translate_module
 from .version import __version__
 
 API_ROOT = capabilities_module.API_ROOT
-ALIAS_ROOTS = capabilities_module.ALIAS_ROOTS
 INPUT_SUBFOLDER = "hamdraw"
 CLIENT_ID = "hamdraw"
 
@@ -93,17 +100,24 @@ MAX_BODY_BYTES = 32 * 1024 * 1024
 MAX_TRACKED_JOBS = 256
 MAX_PENDING_JOBS = 8
 
-AUTH_HINT = "密码在 ComfyUI 的 HamDraw 配置节点里设置。"
+AUTH_HINT = "密码在 ComfyUI 的 CHP 插件配置节点里设置。"
+
+#: 顶层只认这些。其余顶层字段一律忽略，名字进 ``job.ignored`` —— 回执不是可选项：
+#: 没有它，「``steps`` / ``negative_prompt`` 搬进 ``ext_params``」对客户端就是静默失效。
+RECOGNISED_FIELDS = frozenset({
+    "category", "resolution", "prompt", "seed", "ref_strength",
+    "image_base64", "mask_base64", "ext_params", "chp_params",
+})
 
 ERROR_STATUS = {
     "unauthorized": 401,
     "bad_request": 400,
-    "unsupported_capability": 400,
-    "unsupported_task": 400,
+    "unsupported_category": 400,
     "unsupported_size": 400,
     "unsupported_steps": 400,
     "bad_image": 400,
     "bad_mask": 400,
+    "stretched_reference": 400,
     "invalid_workflow": 400,
     "no_model": 409,
     "busy": 429,
@@ -112,16 +126,16 @@ ERROR_STATUS = {
 }
 
 ERROR_MESSAGES = {
-    "unauthorized": "访问密码不正确，请在 ComfyUI 的 HamDraw 配置节点里核对密码。",
+    "unauthorized": "访问密码不正确，请在 ComfyUI 的 CHP 插件配置节点里核对密码。",
     "bad_request": "请求体不是合法 JSON。",
-    "unsupported_capability": "不认识这个能力，请从信息接口的 capabilities 里取 id。",
-    "unsupported_task": "不支持的任务，请使用 quick / inpaint / upscale / render。",
-    "unsupported_size": "该能力不支持这个画幅尺寸。",
-    "unsupported_steps": "该能力不支持这个步数。",
+    "unsupported_category": "不认识这个场景，请从信息接口的 rules 里取 category。",
+    "unsupported_size": "该场景没有这个分辨率，请从它的帧表里挑一个。",
+    "unsupported_steps": "这个步数不被接受。（step 是本实现自己的扩展参数，取值见插件 README。）",
     "bad_image": "参考图不是合法的 base64 PNG/JPEG。",
     "bad_mask": "局部重绘必须提供蒙版图。",
+    "stretched_reference": "参考图的宽高比和这次任务的分辨率不一致：按分辨率缩放会把它压变形，而变形之后从成图上完全看不出来。请按任务分辨率合成参考图再提交。",
     "invalid_workflow": "内置工作流校验失败，可能是模型或节点缺失。",
-    "no_model": "没有可用的模型，请先在 HamDraw 配置节点里选好这一能力要用的模型。",
+    "no_model": "没有可用的模型，请先在 CHP 插件配置节点里选好这个场景要用的模型。",
     "busy": "队列已满，请稍后再试。",
     "not_found": "找不到这个任务。",
     "internal": "服务器内部错误。",
@@ -183,26 +197,31 @@ def _token_of(request: web.Request) -> str:
     return str(request.headers.get("X-HamDraw-Password") or "").strip()
 
 
-def _authorized(request: web.Request) -> bool:
+def _body_token(body: Any) -> str:
+    """``chp_params.password`` — the carrier a request that has a body uses."""
+    if not isinstance(body, dict):
+        return ""
+    params = body.get("chp_params")
+    if not isinstance(params, dict):
+        return ""
+    return str(params.get("password") or "").strip()
+
+
+def _authorized(request: web.Request, body: Any = None) -> bool:
+    """The header first, then the body's ``chp_params.password``.
+
+    Both carriers are accepted — the header is what a ``GET`` and a ``POST``
+    without a body *must* use, and what every client used before this version —
+    but the contract asks a client to send one, not both, so that "which one was
+    meant" never becomes a question.
+    """
     expected = _password()
     if not expected:
         return True
-    return hmac.compare_digest(_token_of(request), expected)
-
-
-def _root_of(request: web.Request) -> str:
-    """Which root this request arrived on, so answers stay on that same root.
-
-    A client that reached the server through the ``/cvp`` alias must get its
-    output URLs back under ``/cvp`` — it has no reason to know ``/chp`` exists,
-    and handing it a path it never asked about would send it somewhere its own
-    allow-list may not cover.
-    """
-    path = str(request.path or "")
-    for root in (API_ROOT, *ALIAS_ROOTS):
-        if path == root or path.startswith(root + "/"):
-            return root
-    return API_ROOT
+    if hmac.compare_digest(_token_of(request), expected):
+        return True
+    token = _body_token(body)
+    return bool(token) and hmac.compare_digest(token, expected)
 
 
 # --------------------------------------------------------------------------- #
@@ -216,57 +235,57 @@ def _available_files(folder: str) -> list[str]:
         return []
 
 
-def _available_map() -> dict[str, list[str]]:
-    """Every model folder a capability can draw from, so a client can see the choices."""
-    return {role: _available_files(folder) for role, folder in capabilities_module.ROLE_FOLDERS.items()}
-
-
-def _checkpoint(capability: str) -> str:
+def _checkpoint(category: str) -> str:
     try:
-        return settings_module.checkpoint(capability)
+        return settings_module.checkpoint(category)
     except Exception:
         return ""
 
 
-def _model_files(capability: str) -> dict[str, str]:
+def _model_files(category: str) -> dict[str, str]:
     try:
-        return settings_module.model_files(capability)
+        return settings_module.model_files(category)
     except Exception:
         return {}
 
 
-def _models_of(capability: dict[str, Any]) -> list[dict[str, Any]]:
-    """The implementation mount point of one capability, as the document reports it.
+def _absent(folder: str, name: str) -> bool:
+    """Is this file missing, from a folder whose listing we could actually read?
 
-    One entry per role the family needs, and each one says whether that *file*
-    is actually installed — the same judgement :func:`create_job` makes before
-    queueing, so a client that configures itself from this document can never be
-    surprised by ``no_model`` at submit time.
-
-    An unreadable folder list (ComfyUI not fully started) is treated as "cannot
-    judge", not as "missing": refusing to submit then would be wrong.
+    An unreadable listing (ComfyUI still starting) means "cannot judge", not
+    "missing": the first is a reason to let a job through, the second a reason
+    to refuse it, and confusing them refuses work that would have run.
     """
-    roles = list(capability.get("roles") or [])
+    available = _available_files(folder)
+    return bool(name) and bool(available) and name not in available
+
+
+def _abilities_of(category: str) -> dict[str, Any]:
+    """One category's model files, and whether they are installed.
+
+    The shape the discovery document needs: never raises, because a document has
+    to answer even when nothing is configured, and "not ready" *is* an answer.
+    The same judgement :func:`_resolve_models` makes before queueing, so a
+    client that configures itself from this document can never be surprised by
+    ``no_model`` at submit time.
+    """
+    entry = capabilities_module.CATEGORY_TABLE[str(category)]
+    roles = [str(role) for role in entry.get("roles") or []]
+    files: dict[str, str] = {}
+    missing: list[str] = []
     if "checkpoint" in roles:
-        name = _checkpoint(capability["id"])
-        available = _available_files("checkpoints")
-        ready = bool(name) and (not available or name in available)
-        return [{"role": "checkpoint", "name": name, "ready": ready,
-                 "missing": [] if ready else ["checkpoint"]}]
-
-    files = _model_files(capability["id"])
-    entries: list[dict[str, Any]] = []
+        name = _checkpoint(str(category))
+        files["checkpoint"] = name
+        if not name or _absent("checkpoints", name):
+            missing.append("checkpoint")
+        return {"files": files, "ready": not missing, "missing": missing}
+    stored = _model_files(str(category))
     for role in roles:
-        name = str(files.get(role) or "").strip()
-        available = _available_files(capabilities_module.ROLE_FOLDERS.get(role, ""))
-        ready = bool(name) and (not available or name in available)
-        entries.append({"role": role, "name": name, "ready": ready,
-                        "missing": [] if ready else [role]})
-    return entries
-
-
-def _models_of_id(capability_id: str) -> list[dict[str, Any]]:
-    return _models_of(capabilities_module.spec_of(capability_id))
+        name = str(stored.get(role) or "").strip()
+        files[role] = name
+        if not name or _absent(capabilities_module.ROLE_FOLDERS.get(role, ""), name):
+            missing.append(role)
+    return {"files": files, "ready": not missing, "missing": missing}
 
 
 # --------------------------------------------------------------------------- #
@@ -311,20 +330,6 @@ def _store_image(payload: Any, code: str) -> str:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / name).write_bytes(raw)
     return f"{INPUT_SUBFOLDER}/{name}"
-
-
-def _size_of(value: Any) -> list[int] | None:
-    if isinstance(value, (list, tuple)) and len(value) >= 2:
-        try:
-            return [int(value[0]), int(value[1])]
-        except (TypeError, ValueError):
-            return None
-    if isinstance(value, dict):
-        try:
-            return [int(value.get("width", 0)), int(value.get("height", 0))]
-        except (TypeError, ValueError):
-            return None
-    return None
 
 
 def _number_of(value: Any, fallback: Any = None) -> Any:
@@ -426,8 +431,14 @@ def _error_of(entry: dict[str, Any] | None) -> str:
     return ""
 
 
-def _outputs_of(prompt_id: str, entry: dict[str, Any] | None, root: str) -> list[dict[str, Any]]:
-    """Finished images, as absolute paths under ``root`` — a client must not re-join a base."""
+def _outputs_of(prompt_id: str, entry: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Finished images, as paths a client can fetch — never a base to re-join.
+
+    The URL is built from :data:`API_ROOT`, which is the same root
+    ``endpoints.output`` publishes, so the address a client reads out of the
+    document and the address it is handed back here are the same string.  There
+    is no second root to be relative to, so nothing here reads the request.
+    """
     if not isinstance(entry, dict):
         return []
     outputs = entry.get("outputs")
@@ -451,7 +462,7 @@ def _outputs_of(prompt_id: str, entry: dict[str, Any] | None, root: str) -> list
                     "subfolder": str(image.get("subfolder") or ""),
                     "type": str(image.get("type") or "output"),
                     "media_type": MEDIA_TYPES.get(suffix, "image/png"),
-                    "url": f"{root}/jobs/{prompt_id}/output/{len(files)}",
+                    "url": f"{API_ROOT}/jobs/{prompt_id}/output/{len(files)}",
                 }
             )
     return files
@@ -489,20 +500,29 @@ def _queue_position(job_id: str, running: list[str], pending: list[str]) -> int 
 
 
 def _describe(job: dict[str, Any], running: list[str], pending: list[str],
-              entry: dict[str, Any] | None, *, output_root: str = API_ROOT) -> dict[str, Any]:
+              entry: dict[str, Any] | None) -> dict[str, Any]:
     state = _state_of(job, running, pending, entry)
     job_id = str(job["id"])
-    outputs = _outputs_of(job_id, entry, output_root)
+    outputs = _outputs_of(job_id, entry)
 
     payload: dict[str, Any] = {
         "id": job_id,
-        "capability": str(job.get("capability") or ""),
+        "category": str(job.get("category") or ""),
         "state": state,
         "queue_position": _queue_position(job_id, running, pending),
         # Never a fabricated number: the CHP contract allows null.
         "progress": None,
         "created": job.get("created"),
         "typical_seconds": job.get("typical_seconds"),
+        # The effective values, echoed back: a client that asked for something
+        # out of range must be able to read what it actually got instead of
+        # assuming its own number took.
+        "resolution": str(job.get("resolution") or ""),
+        "seed": job.get("seed"),
+        "ref_strength": job.get("ref_strength"),
+        # Carried through verbatim, so a happ that put its own key in here can
+        # read it back — including one the server did not understand.
+        "ext_params": dict(job.get("ext_params") or {}),
         "prompt": str(job.get("prompt") or ""),
         "prompt_source": str(job.get("prompt_source") or ""),
         "translated": bool(job.get("translated")),
@@ -607,12 +627,12 @@ async def info(request: web.Request) -> web.Response:
     """
     return _json(
         capabilities_module.document(
-            resolve=_models_of_id,
+            files_of=_abilities_of,
             authorized=_authorized(request),
             auth_required=bool(_password()),
             translation=translate_module.describe(),
-            available=_available_map(),
             auth_hint=AUTH_HINT,
+            errors=sorted(ERROR_STATUS),
         )
     )
 
@@ -621,96 +641,95 @@ async def info(request: web.Request) -> web.Response:
 # jobs
 # --------------------------------------------------------------------------- #
 
-def _no_model(capability: str, models: list[dict[str, Any]],
-              folder: str, name: str) -> web.Response:
-    """The one ``no_model`` answer, from the one place that decides it."""
-    if folder:
-        return _fail("no_model", message=f"模型 {name} 不在 ComfyUI 的 {folder} 目录里。",
-                     detail={"capability": capability, "role": folder, "available": _available_files(folder)})
-    missing = [item["role"] for item in models if not item.get("ready")]
-    return _fail("no_model",
-                 detail={"capability": capability, "missing": missing,
-                         "models": {item["role"]: item["name"] for item in models}})
+def _no_model(category: str, folder: str, name: str = "") -> web.Response:
+    """The one ``no_model`` answer, from the one place that decides it.
 
-
-def _resolve_models(capability: dict[str, Any]) -> tuple[dict[str, str], web.Response | None]:
-    """The files this capability will run on, or the error to answer with.
-
-    Checkpoint capabilities fall back to the ``quick`` checkpoint when their own
-    slot is empty — that is what ``settings.checkpoint()`` does and therefore
-    what the graph would use, so a job submitted against the fallback is not
-    refused here.
+    ``name`` empty means nothing is configured for that slot, which is a
+    different sentence from "the file you picked is not installed" — the operator
+    fixes the first in the config node and the second on disk.
     """
-    if "checkpoint" in (capability.get("roles") or []):
-        name = _checkpoint(capability["id"])
-        if not name:
-            return {}, _fail("no_model", detail={"capability": capability["id"],
-                                                 "checkpoints": _available_files("checkpoints")})
-        available = _available_files("checkpoints")
-        if available and name not in available:
-            return {}, _no_model(capability["id"], [], "checkpoints", name)
-        return {"checkpoint": name}, None
+    if name:
+        message = f"模型 {name} 不在 ComfyUI 的 {folder} 目录里。"
+    else:
+        message = f"这个场景还没有在 {folder} 里选模型。"
+    return _fail("no_model", message=message,
+                 detail={"category": category, "folder": folder,
+                         "available": _available_files(folder)})
 
-    files = {role: str(_model_files(capability["id"]).get(role) or "").strip()
-             for role in capability.get("roles") or []}
-    for role in capability.get("roles") or []:
-        name = files[role]
-        folder = capabilities_module.ROLE_FOLDERS.get(role, "")
-        if not name:
-            return {}, _fail("no_model", detail={"capability": capability["id"],
-                                                 "missing": role, "models": files})
-        available = _available_files(folder)
-        if available and name not in available:
-            return {}, _no_model(capability["id"], [], folder, name)
-    return files, None
+
+def _resolve_models(category: str) -> tuple[dict[str, str], web.Response | None]:
+    """The files this category will run on, or the error to answer with.
+
+    The judgement is :func:`_abilities_of`'s, not a second copy of it.  The
+    information document tells a client which files are installed; if submission
+    decided that separately the two could disagree, and a client configured from
+    the document would be refused anyway — the one failure mode a discovery
+    document exists to prevent.  One decision point, so they cannot.
+    """
+    resolved = _abilities_of(category)
+    if resolved["ready"]:
+        return resolved["files"], None
+    role = str(resolved["missing"][0])
+    folder = capabilities_module.ROLE_FOLDERS.get(role, role)
+    name = str(resolved["files"].get(role) or "").strip()
+    return {}, _no_model(category, folder, name)
 
 
 async def create_job(request: web.Request) -> web.Response:
-    if not _authorized(request):
-        return _fail("unauthorized")
-
+    # The body is read *before* the password is checked, because the password may
+    # be in it: a request that carries a body sends ``chp_params.password``, and
+    # a secret belongs in neither a URL nor a log line.  Reading it first costs
+    # nothing — a successful request needed the body anyway, and aiohttp already
+    # bounds it at ``MAX_BODY_BYTES``.
     try:
         body = await request.json()
     except Exception:
         return _fail("bad_request")
     if not isinstance(body, dict):
         return _fail("bad_request")
+    if not _authorized(request, body):
+        return _fail("unauthorized")
 
-    # ``capability`` is the CHP name and wins; ``task`` is the spelling an older
-    # client still sends, and is accepted as an alias for the same thing.
-    requested = str(body.get("capability") or body.get("task") or "").strip().lower()
-    capability = capabilities_module.find(requested)
-    if capability is None:
-        # An older client only ever sends ``task`` and only has a branch for
-        # ``unsupported_task``; answer in its own vocabulary instead of handing
-        # it a code it cannot interpret.
-        if not body.get("capability") and body.get("task"):
-            return _fail("unsupported_task", detail={"task": requested})
-        return _fail("unsupported_capability", detail={"capability": requested})
-    name = str(capability["id"])
+    # Every top-level field this version does not recognise, echoed back.  This
+    # is the receipt that makes a rename visible instead of silent: a client
+    # still sending ``capability`` / ``size`` / ``steps`` is told, in the one
+    # response it was already reading, that those are no longer the field names.
+    ignored = sorted(str(field) for field in body if field not in RECOGNISED_FIELDS)
 
-    size = _size_of(body.get("size"))
-    steps_value = _number_of(body.get("steps"))
+    # ``category`` is the only spelling.  ``capability`` and ``task`` are not
+    # aliases any more — a client that sends one instead is refused, and the
+    # ``ignored`` list above says which field it should have used.
     try:
-        chosen_size, chosen_steps = capabilities_module.validate_values(
-            capability, size, int(steps_value) if steps_value is not None else None)
+        category = capabilities_module.category_of(body.get("category"))
+    except ValueError:
+        return _fail("unsupported_category",
+                     detail={"category": body.get("category"), "ignored": ignored})
+    name = str(category["category"])
+
+    # A member of the category's frame table, not a numeric domain: the client
+    # picks from the menu the document published, and nothing computes a shape
+    # the menu never offered.
+    try:
+        resolution = capabilities_module.validate_resolution(name, body.get("resolution"))
+        width, height = capabilities_module.resolution_size(resolution)
     except ValueError as error:
         code = str(error)
         return _fail(code if code in ERROR_STATUS else "bad_request",
-                     detail={"size": size, "steps": steps_value})
+                     detail={"category": name, "resolution": body.get("resolution"),
+                             "ignored": ignored})
 
     seed_value = _number_of(body.get("seed"), 0)
     seed = int(seed_value or 0)
     if seed < 0:
         return _fail("bad_request", "seed 不能是负数。", detail={"seed": seed_value})
 
-    needs = capability.get("needs") or {}
-    if needs.get("mask") and not _sent(body, "mask_base64", "mask"):
+    needs = category.get("needs") or {}
+    if needs.get("mask") and not _sent(body, "mask_base64"):
         return _fail("bad_mask")
-    if needs.get("image") and not _sent(body, "image_base64", "image"):
+    if needs.get("image") and not _sent(body, "image_base64"):
         return _fail("bad_image")
 
-    models, refused = _resolve_models(capability)
+    models, refused = _resolve_models(name)
     if refused is not None:
         return refused
 
@@ -719,55 +738,48 @@ async def create_job(request: web.Request) -> web.Response:
         return _fail("busy", detail={"pending": len(pending)})
 
     try:
-        # 参考图是可选的 —— 能力声明 needs.image=false 时, 不带它就是一次纯文生图,
+        # 参考图是可选的 —— 类别声明 needs.image=false 时, 不带它就是一次纯文生图,
         # 不是"漏了参数"。所以这里判的是"带了没带": 带了才落盘, 带了但不合法照样报
-        # bad_image。needs.image 为真的能力在上面已经被拦下, 走不到这里。
+        # bad_image。needs.image 为真的类别在上面已经被拦下, 走不到这里。
         image_name = ""
-        if _sent(body, "image_base64", "image"):
-            image_name = _store_image(body.get("image_base64") or body.get("image"), "bad_image")
+        if _sent(body, "image_base64"):
+            image_name = _store_image(body.get("image_base64"), "bad_image")
         mask_name = ""
         if needs.get("mask"):
-            mask_name = _store_image(body.get("mask_base64") or body.get("mask"), "bad_mask")
+            mask_name = _store_image(body.get("mask_base64"), "bad_mask")
     except ValueError as error:
         return _fail(str(error))
 
-    # A field the capability declares it ignores is not passed on, and is
-    # reported back so the client can tell the user instead of pretending it
-    # took effect.  Only fields the request actually carried are listed.
-    ignored = [field for field in capability.get("ignores") or [] if _provided(body.get(field))]
+    # The model layer, carried and echoed verbatim — the spec defines no field in
+    # it.  This implementation reads two keys of its own out of it, ``step`` and
+    # ``negative_prompt``, and it reads them *here* rather than in ``families``
+    # so that "what was echoed" and "what was used" are the same object.
+    raw_ext = body.get("ext_params")
+    ext = dict(raw_ext) if isinstance(raw_ext, dict) else {}
 
     prompt_source = str(body.get("prompt") or "")
     prompt_used, translated = prompt_source, False
-    if needs.get("prompt") and str((capability.get("prompt") or {}).get("language") or "") == "en":
+    if needs.get("prompt") and str((category.get("prompt") or {}).get("language") or "") == "en":
         prompt_used, translated = await translate_module.ensure_english(prompt_source)
-    if "negative_prompt" in ignored:
-        negative_prompt = ""
-    else:
-        negative_prompt = str(body.get("negative_prompt") or "")
 
     settings = settings_module.load()
     sampling = settings["sampling"].get(name) or {}
     ref_strength = capabilities_module.clamp_ref_strength(
-        body.get("ref_strength"), float(capability["defaults"]["ref_strength"]))
-    grow_value = _number_of(body.get("grow_mask_by"), None)
-    low, high = capabilities_module.GROW_MASK_RANGE
-    grow_mask_by = None if grow_value is None else int(min(max(int(grow_value), low), high))
+        body.get("ref_strength"), float(category["defaults"]["ref_strength"]))
 
     try:
         graph = families.build(
-            spec=capability,
+            spec=category,
             models=models,
             sampling=sampling,
             image=image_name,
             mask=mask_name,
             prompt=prompt_used,
-            negative_prompt=negative_prompt,
             seed=seed,
-            steps=chosen_steps,
-            size=chosen_size,
+            size=(width, height),
             ref_strength=ref_strength,
-            grow_mask_by=grow_mask_by,
-            options=settings_module.family_options(str(capability.get("family") or "")),
+            ext=ext,
+            options=settings_module.family_options(str(category.get("family") or "")),
             filename_prefix=f"hamdraw/{name}",
         )
     except ValueError as error:
@@ -812,15 +824,13 @@ async def create_job(request: web.Request) -> web.Response:
 
     job = {
         "id": prompt_id,
-        "capability": name,
-        # What the client actually asked for, so an old client polling a job it
-        # submitted as "qwen" still reads back "qwen".
-        "requested": requested or name,
+        "category": name,
         "created": time.time(),
-        "typical_seconds": capability.get("typical_seconds"),
-        "size": chosen_size,
-        "steps": chosen_steps,
+        "typical_seconds": category.get("typical_seconds"),
+        "resolution": resolution,
+        "seed": seed,
         "ref_strength": ref_strength,
+        "ext_params": ext,
         "prompt": prompt_used,
         "prompt_source": prompt_source,
         "translated": translated,
@@ -828,7 +838,7 @@ async def create_job(request: web.Request) -> web.Response:
         "cancelled": False,
     }
     _track(job)
-    return _json({"job": _describe(job, running, pending + [prompt_id], None, output_root=_root_of(request))}, status=202)
+    return _json({"job": _describe(job, running, pending + [prompt_id], None)}, status=202)
 
 
 async def job_status(request: web.Request) -> web.Response:
@@ -840,9 +850,12 @@ async def job_status(request: web.Request) -> web.Response:
     if job is None:
         if entry is None:
             return _fail("not_found")
-        job = {"id": job_id, "capability": "", "requested": "", "created": time.time(), "cancelled": False}
+        # A job submitted before this process started: the record is gone but
+        # ComfyUI's history still has the outputs, so the job is described from
+        # an empty shell rather than reported missing.
+        job = {"id": job_id, "category": "", "created": time.time(), "cancelled": False}
     running, pending = _queue_snapshot()
-    return _json({"job": _describe(job, running, pending, entry, output_root=_root_of(request))})
+    return _json({"job": _describe(job, running, pending, entry)})
 
 
 async def job_progress(request: web.Request) -> web.Response:
@@ -873,7 +886,7 @@ async def job_output(request: web.Request) -> web.Response:
         index = int(str(request.match_info.get("index") or "0"))
     except (TypeError, ValueError):
         return _fail("bad_request")
-    files = _outputs_of(job_id, _history_entry(job_id), _root_of(request))
+    files = _outputs_of(job_id, _history_entry(job_id))
     if index < 0 or index >= len(files):
         return _fail("not_found")
     chosen = files[index]
@@ -902,12 +915,12 @@ async def cancel_job(request: web.Request) -> web.Response:
     if job is not None:
         job["cancelled"] = True
     elif dropped:
-        job = {"id": job_id, "capability": "", "requested": "", "created": time.time(), "cancelled": True}
+        job = {"id": job_id, "category": "", "created": time.time(), "cancelled": True}
         _track(job)
     if job is None:
         return _fail("not_found")
     running, pending = _queue_snapshot()
-    return _json({"job": _describe(job, running, pending, _history_entry(job_id), output_root=_root_of(request))})
+    return _json({"job": _describe(job, running, pending, _history_entry(job_id))})
 
 
 async def translate_prompts(request: web.Request) -> web.Response:
@@ -918,14 +931,14 @@ async def translate_prompts(request: web.Request) -> web.Response:
     text when the translator is off or unreachable: the caller decides what to
     do, it never has to handle an error.
     """
-    if not _authorized(request):
-        return _fail("unauthorized")
     try:
         body = await request.json()
     except Exception:
         return _fail("bad_request")
     if not isinstance(body, dict):
         return _fail("bad_request")
+    if not _authorized(request, body):
+        return _fail("unauthorized")
     raw = body.get("texts")
     if isinstance(raw, str):
         raw = [raw]
@@ -954,17 +967,18 @@ def register_routes() -> bool:
         except Exception:
             pass
 
-    # The contract, on the primary root and on every alias.  One loop, so an
-    # alias can never end up serving a subset of the API.
-    for root in (API_ROOT, *ALIAS_ROOTS):
-        routes.get(f"{root}/info")(info)
-        routes.post(f"{root}/jobs")(create_job)
-        routes.get(f"{root}/jobs/{{job_id}}")(job_status)
-        routes.get(f"{root}/jobs/{{job_id}}/progress")(job_progress)
-        routes.get(f"{root}/jobs/{{job_id}}/output/{{index}}")(job_output)
-        routes.post(f"{root}/jobs/{{job_id}}/cancel")(cancel_job)
-        routes.post(f"{root}/translate")(translate_prompts)
+    # One root, spelled once.  The alias loop that used to be here existed so
+    # ``/cvp`` could serve the same API; a client is now told to read its
+    # addresses out of the document's ``endpoints``, so a second spelling of the
+    # same thing is a promise this version deliberately stops making.
+    routes.get(f"{API_ROOT}/info")(info)
+    routes.post(f"{API_ROOT}/jobs")(create_job)
+    routes.get(f"{API_ROOT}/jobs/{{job_id}}")(job_status)
+    routes.get(f"{API_ROOT}/jobs/{{job_id}}/progress")(job_progress)
+    routes.get(f"{API_ROOT}/jobs/{{job_id}}/output/{{index}}")(job_output)
+    routes.post(f"{API_ROOT}/jobs/{{job_id}}/cancel")(cancel_job)
+    routes.post(f"{API_ROOT}/translate")(translate_prompts)
     return True
 
 
-__all__ = ["ALIAS_ROOTS", "API_ROOT", "register_routes"]
+__all__ = ["API_ROOT", "register_routes"]

@@ -107,12 +107,13 @@
     else about();
   }
   function aspectField(model, name) {
-    // The canvas and the step count belong to the capability, so they are printed
-    // and never offered. There used to be a pair of canvas buttons on the render
-    // slot; they are gone with the rest of the per-task numbers, because the
-    // workflow is built around the canvas the plugin publishes — an alternative
-    // could only come back as unsupported_size — and because a task whose shape
-    // is the plugin's business should not look like a choice the user owns.
+    // The canvas and the step count belong to the plugin — the canvas to the frames
+    // it publishes, the step count to its own workflows — so they are printed and
+    // never offered. There used to be a pair of canvas buttons on the render slot;
+    // they are gone with the rest of the per-task numbers, because the workflow is
+    // built around the canvas the plugin publishes — an alternative could only come
+    // back as unsupported_size — and because a task whose shape is the plugin's
+    // business should not look like a choice the user owns.
     //
     // The pair is printed straight from what the request will carry, so the row
     // can never advertise a shape the job does not submit. Mirroring one edge
@@ -121,9 +122,9 @@
   }
   function renderModels() {
     var model = draft[slot] || draft.quick, protocol = model.protocol, chp = protocol === "chp";
-    // The three CHP capabilities share one address, password and header set, so the
+    // The three CHP tasks share one address, password and header set, so the
     // form reads and writes that single object instead of this task's own copy.
-    // Switching capabilities therefore shows the same connection, and the store
+    // Switching tasks therefore shows the same connection, and the store
     // re-derives each one from it when the settings are saved.
     var shared = draft.connection || (draft.connection = { endpoint: "", apiKey: "", customHeaders: "" });
     var choices = app.services.providers.protocols.map(function (p) { return [p.id, p.name]; });
@@ -132,7 +133,7 @@
     }).join("");
     var secretLabel = chp ? t("访问密码", "Access password") : "API Key";
     var secretHint = chp
-      ? t("在 ComfyUI 的 HamDraw 配置节点里设置；留空表示插件没有启用密码", "Set it in the ComfyUI HamDraw config node; leave empty when the plugin has no password")
+      ? t("在 ComfyUI 的 CHP 插件配置节点里设置；留空表示插件没有启用密码", "Set it in the ComfyUI CHP plugin's config node; leave empty when the plugin has no password")
       : t("免鉴权的本地服务可留空", "Optional for local services");
     var secretField = '<label class="field"><span>' + secretLabel + '</span><div class="secret-input"><input name="apiKey" type="password" autocomplete="off" value="' + u.escapeHtml(chp ? shared.apiKey : model.apiKey) + '" placeholder="' + u.escapeHtml(secretHint) + '"><button data-toggle-secret aria-label="' + t("显示密钥", "Show key") + '"><i class="fa-regular fa-eye"></i></button><button data-paste-secret aria-label="' + t("粘贴密钥", "Paste key") + '"><i class="fa-regular fa-paste"></i></button></div></label>';
     var sharedHelp = '<p class="field-help">' + t("三个任务的 CHP 地址与密码是同一套：在这里改，三个任务一起改。", "The three tasks share one CHP address and password: change it here and all three change together.") + '</p>';
@@ -143,7 +144,7 @@
         secretField +
         (chp ? sharedHelp : '') +
         (!chp ? input("model", t("模型 ID", "Model ID"), model.model, "text", t("填写服务提供的模型名称", "Model name from your provider")) : '') +
-        (chp ? '<p class="field-help">' + t("画幅、步数和参考图权重由插件内置的工作流决定；点下方按钮可以直接读取插件当前的模型与能力。中文提示词由插件负责译成英文。", "Aspect, steps and reference weight come from the plugin's built-in workflows. The button below reads the plugin's current models and capabilities. The plugin translates a Chinese prompt itself.") + '</p>' : '') +
+        (chp ? '<p class="field-help">' + t("画幅、步数和参考图权重由插件内置的工作流决定；点下方按钮可以直接读取插件当前的模型与场景。中文提示词由插件负责译成英文。", "Aspect, steps and reference weight come from the plugin's built-in workflows. The button below reads the plugin's current models and categories. The plugin translates a Chinese prompt itself.") + '</p>' : '') +
         // A CHP task exposes the connection and nothing else: the canvas, the step
         // count, the reference weight and the mask grow all belong to the plugin's
         // built-in workflows, and the paragraph above already says so. Offering a
@@ -155,17 +156,16 @@
         '<p class="field-help">' + t("只向你配置的服务发送画面。局域网支持 HTTP；访问密码仅在保存后保存在当前应用。", "Images go only to your configured service. LAN HTTP is supported. Passwords are stored locally when you save.") + '</p>' +
         '<button class="button button-secondary" data-test><i class="fa-solid fa-plug"></i>' + t("测试连接", "Test connection") + '</button><p class="connection-status" data-test-status></p>' +
         (chp ? '<button class="button button-secondary" data-plugin-download><i class="fa-solid fa-download"></i>' + t("下载 ComfyUI 插件", "Download ComfyUI plugin") + '</button>' +
-          '<p class="field-help">' + t("插件包随本应用一起提供。解压到 ComfyUI 的 custom_nodes 目录后重启 ComfyUI，再在 HamDraw 配置节点里填同样的密码。", "The plugin package ships with this app. Unzip it into ComfyUI's custom_nodes directory, restart ComfyUI, then set the same password in the HamDraw config node.") + '</p>' : '') + '</div>';
+          '<p class="field-help">' + t("插件包随本应用一起提供。解压到 ComfyUI 的 custom_nodes 目录后重启 ComfyUI，再在 CHP 插件配置节点里填同样的密码。", "The plugin package ships with this app. Unzip it into ComfyUI's custom_nodes directory, restart ComfyUI, then set the same password in the CHP plugin's config node.") + '</p>' : '') + '</div>';
     var root = ui.open({ title: t("模型配置", "Models"), beforeClose: discard, html:
       '<div class="segmented model-tabs">' + tabs + '</div>' + card + footer() });
     bindChoices(root);
     root.querySelectorAll("[data-slot-tab]").forEach(function (button) { button.onclick = function () { slot = button.dataset.slotTab; renderModels(); }; });
     root.querySelectorAll("[name]").forEach(function (field) {
-      var numeric = ["width", "height", "steps", "timeoutMs", "refStrength", "growMaskBy"].indexOf(field.name) >= 0;
+      var numeric = ["width", "height", "steps", "timeoutMs", "refStrength"].indexOf(field.name) >= 0;
       // These three are the shared CHP connection, so they are written to the one
-      // object as well as to this capability's copy (the copy keeps the test
-      // button and the request path reading real values before the settings are
-      // saved).
+      // object as well as to this task's own copy (the copy keeps the test button
+      // and the request path reading real values before the settings are saved).
       var sharedField = chp && ["endpoint", "apiKey", "customHeaders"].indexOf(field.name) >= 0;
       function update() {
         var value = field.name === "apiKey" || field.name === "customHeaders" ? field.value : numeric ? Number(field.value) : field.value;
@@ -204,13 +204,16 @@
       try {
         var result = await app.services.providers.test(draft[slot]);
         // One call to the plugin's public information endpoint answers all of it:
-        // the address resolves, the password was right, the capability exists,
-        // its models are installed. The card then says which model it will
-        // actually run and whether the user should type Chinese or English,
-        // both read from what the plugin reported rather than assumed here.
-        if (result && result.capability) {
-          var label = (result.label && (app.i18n.language() === "zh" ? result.label.zh : result.label.en)) || result.capability;
-          var files = (result.models || []).map(function (item) { return String(item.name || "").trim(); }).filter(function (name) { return name; }).join(" + ");
+        // the address resolves, the password was right, the category exists, its
+        // models are installed. The card then says which files it would run and
+        // whether the user should type Chinese or English, both read from what the
+        // plugin reported rather than assumed here.
+        if (result && result.category) {
+          var label = (result.label && (app.i18n.language() === "zh" ? result.label.zh : result.label.en)) || result.category;
+          // The files come from the ability that answers this category — the set of
+          // models it runs on — rather than from a name this app would have to pick
+          // out of a request that has not been sent yet.
+          var files = Object.keys(result.files || {}).map(function (role) { return String((result.files || {})[role] || "").trim(); }).filter(function (name) { return name; }).join(" + ");
           var language = result.promptLanguage === "en"
             ? t("中文提示词会在提交时由插件译成英文。", "A Chinese prompt is translated by the plugin when the job is submitted.")
             : t("可以直接写中文，提示词会原样交给模型。", "Chinese can be written as-is; the prompt reaches the model unchanged.");
@@ -243,8 +246,8 @@
   function workSettings() {
     var state = app.state;
     var root = ui.open({ sheetClass: "work-settings-sheet", contentClass: "work-settings-content", title: t("作品设置", "Artwork settings"), footerHtml: footer(t("应用", "Apply")), html:
-      textarea("prompt", t("简述你期望的画面内容（中英文都行）", "Describe the image you expect (Chinese or English)"), state.prompt, "例如:一只蓝色的水晶鸟飞过雪山,清晨的光", 3) +
-      textarea("negativePrompt", t("不希望出现内容（中英文都行）", "What to avoid (Chinese or English)"), state.negativePrompt, "例如:模糊,变形,水印", 2) +
+      textarea("prompt", t("简述你期望的画面内容（英文可以获得更佳效果）", "Describe the image you expect (English works better)"), state.prompt, "例如:一只蓝色的水晶鸟飞过雪山,清晨的光", 3) +
+      textarea("negativePrompt", t("不希望出现内容（英文可以获得更佳效果）", "What to avoid (English works better)"), state.negativePrompt, "例如:模糊,变形,水印", 2) +
       range("strength", t("绘制稿保留强度", "Sketch preservation"), Math.round(state.strength * 100), 0, 100, "%", "strength-field") +
       '<p class="field-help compact-help">' + t("设置100或更高可以让AI画图和手绘稿更一致；设置80或更低会让AI更有创造力；请随时根据需要来这里调整。", "Set 100 or higher to keep the AI image closer to your sketch; set 80 or lower to give the AI more creative freedom. Return here and adjust it whenever needed.") + '</p>' +
       '<div class="field-row">' + input("seed", t("随机种子", "Seed"), state.seed, "number", t("关闭锁定时由模型自动随机", "The model randomizes while unlocked")) + input("autoDelayMs", t("笔刷等待（毫秒）", "Brush wait (ms)"), state.autoDelayMs, "number") + '</div>' +
@@ -392,13 +395,13 @@
     var fa = glyph, line = helpLine;
     ui.open({ title: t("使用说明", "How to draw"), html: '<div class="help-copy">' +
       helpSection(t("快速上手", "Quick start"), [
-        line(fa("fa-solid", "gear"), t("① 写提示词（中英文都行）", "1 · Describe it"), t("点画布上方的齿轮打开「作品设置」,在第一个框里写画面内容,中英文都行。接 CHP 插件时,只认英文的模型由插件在提交那一刻自动把中文译成英文;写英文就原样提交。越具体越准。", "Tap the gear above the canvas to open Artwork settings and write the scene in the first field. Chinese or English both work: with the CHP plugin, a model that only reads English gets a translation the plugin makes at submit time, and an English prompt is submitted exactly as written. The more specific, the better.")),
+        line(fa("fa-solid", "gear"), t("① 写提示词（英文可以获得更佳效果）", "1 · Describe it (English works better)"), t("点画布上方的齿轮打开「作品设置」,在第一个框里写画面内容,英文可以获得更佳效果。接 CHP 插件时,只认英文的模型由插件在提交那一刻自动把中文译成英文;写英文就原样提交。越具体越准。", "Tap the gear above the canvas to open Artwork settings and write the scene in the first field. English works better: with the CHP plugin, a model that only reads English gets a translation the plugin makes at submit time, and an English prompt is submitted exactly as written. The more specific, the better.")),
         line(fa("fa-solid", "pencil"), t("② 自由绘制", "2 · Draw freely"), t("铅笔勾轮廓，涂色铺色，也可以用「图片」导入参考。", "Sketch with Pencil, color with Brush, or import a reference with Image.")),
         line(fa("fa-solid", "wand-magic-sparkles") + fa("fa-solid", "dice"), t("③ 快速生成 / 随机创意", "3 · Fast or roll a seed"), t("点「快速」出实时预览；点骰子换一个随机数再生一次，换个构图。", "Tap Fast for a live preview, or the dice to roll a seed and generate again for a different take.")),
         line(fa("fa-regular", "gem"), t("④ 渲染大图", "4 · Render"), t("点「渲染」得到 1024 高清图；画布右下角钻石可全屏查看、单独下载。", "Tap Render for a 1024 image; the diamond on the canvas opens it fullscreen with its own download."))
       ]) +
       helpSection(t("作品设置", "Artwork settings"), [
-        line(fa("fa-solid", "gear"), t("提示词（重点）", "Description (key)"), t("齿轮是它唯一的入口。第一个框写画面内容,第二个框写不希望出现的东西,中英文都行,原样提交。写中文时由后台负责译成英文(CHP 插件自带翻译和缓存),应用不参与翻译,也不会改动你写的字；局部重绘用的是另一套单独的描述，两者不混用。", "The gear is the only way in. The first field is the scene, the second what to avoid, in Chinese or English, submitted as written. A Chinese prompt is translated by the backend — the CHP plugin ships its own translator and cache — so the app takes no part in it and never rewrites your words. Local redraw keeps its own separate description.")),
+        line(fa("fa-solid", "gear"), t("提示词（重点）", "Description (key)"), t("齿轮是它唯一的入口。第一个框写画面内容,第二个框写不希望出现的东西,英文可以获得更佳效果,原样提交。写中文时由后台负责译成英文(CHP 插件自带翻译和缓存),应用不参与翻译,也不会改动你写的字；局部重绘用的是另一套单独的描述，两者不混用。", "The gear is the only way in. The first field is the scene, the second what to avoid; English works better and both are submitted as written. A Chinese prompt is translated by the backend — the CHP plugin ships its own translator and cache — so the app takes no part in it and never rewrites your words. Local redraw keeps its own separate description.")),
         line(fa("fa-regular", "image"), t("图像权重（重点）", "Image weight (key)"), t("提示条上的滑竿：80% 为中性；调高更贴手绘稿，调低模型更自由。点左边的图片图标一键回到 80%。作品设置里的「绘制稿保留强度」就是这个值。", "The slider on the prompt bar: 80% is neutral. Higher sticks closer to your sketch, lower frees the model. The image icon on its left snaps back to 80%. Artwork settings exposes the same value as Sketch preservation."))
       ]) +
       helpSection(t("画布工具栏", "Canvas toolbar"), [

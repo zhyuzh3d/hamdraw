@@ -57,8 +57,8 @@ DEV 副本的 `#self-test` 入口覆盖绘图,撤销 / 重做,对象操作,蒙�
 - 使用可直接运行的原生 HTML / CSS / JavaScript,组件以 IIFE 注册到 `window.hamdraw`,**不引入**框架,构建器,包管理器,CDN 或远程字体。
 - 兼容 Android 10 与旧厂商 WebView,避免无降级的新语法与新 Web API。
 - 图片字节,Base64,data URL **禁止写入 `haminn.data`**：作品记录只存文件引用,用户导入的图片与服务返回的图片使用 Haminn 逻辑文件,内联图片通过公开文本文件接口保存为有界编码文件块,由 `services/assets.js` 统一恢复和清理。不要在 release 目录保存用户资产,也不要臆造宿主二进制写入接口。
-- 接口模式与参数：画幅,步数,参考图权重由所选接口的内置规格决定,`ref_strength` 是唯一的参考图权重入口。CHP 的契约以 `comfyui-plugin/README.md` 为准。
-- 提示词必须是英文,中文由 `services/translate.js` 译成英文再提交,生图路径只读翻译缓存,绝不触发网络。
+- 接口模式与参数：画幅,步数,参考图权重由所选接口的内置规格决定,`ref_strength` 是唯一的参考图权重入口。CHP 的画幅取自插件信息文档里该场景的 `frames`(锁 `1:1` 那一档),参考图权重取自它的 `defaults`,步数是本应用自己的数 —— 协议不定义 `ext_params` 里的任何字段。契约以 `comfyui-plugin/README.md` 为准。
+- 提示词原样提交,由服务端决定要不要译英：CHP 插件在提交时自己译(见信息文档的 `rules[].prompt.language`),OpenAI / Stability 那一侧本来就吃英文。客户端不再保留任何翻译机制。
 - 运行包只包含 `index.html`,`haminn.json`,`guid.md`,`app/` 与 `styles/`,`tools/`,`tests/`,`docs/`,`release/`,`comfyui-plugin/` 不进运行包。插件版本只有一个出处：`comfyui-plugin/hamdraw_chp/version.py`。
 
 ## 不要提交
