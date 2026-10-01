@@ -358,7 +358,7 @@ CATEGORY_TABLE: dict[str, dict[str, Any]] = {
         "family": "qwen_image_21",
         # 4 / 6 两档是加速档案自己的步数（PDD 4 步、Viggle 6 步）—— 枚举里必须有它们,
         # 否则 dispatcher 会把默认步数判成非法。20 是"没配加速档案时的正经挡位"。
-        "steps": {"values": (4, 8, 12, 20), "default": 20},
+        "steps": {"values": (4, 6, 8, 12, 20), "default": 20},
     },
     "generate": {
         "category": "generate",

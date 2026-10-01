@@ -65,7 +65,7 @@ HamDraw 是 HaminnApp 的 happ,**不能脱离宿主单独安装**。
 - 用户只需要操作一个节点 **CHP 配置(Config)**：设访问密码,挑三套 checkpoint,以及 `render` 那一路的三个模型槽位。密码填错时请求在入队之前就返回 `401`,不会生图,密码留空则不校验。
 - 完整 HTTP 契约,配置字段与离线自测见 [comfyui-plugin/README.md](./comfyui-plugin/README.md)。
 
-插件版本只有一个出处：`comfyui-plugin/hamdraw_chp/version.py` 的 `__version__`(当前 `3.0.0`)。仓库内构建发布包：
+插件版本只有一个出处：`comfyui-plugin/hamdraw_chp/version.py` 的 `__version__`(当前 `3.1.1`)。仓库内构建发布包：
 
 ```sh
 python3 tools/package-plugin.py          # 生成确定性 zip(固定时间戳与条目顺序)
@@ -75,10 +75,10 @@ python3 tools/package-plugin.py --check  # 只校验不写入
 官网安装卡片提供可直接下载的插件包(已核实可用)：
 
 ```text
-https://haminn.airen.life/downloads/hamdraw/hamdraw-comfyui-plugin-v2.3.0.zip
+https://haminn.airen.life/downloads/hamdraw/hamdraw-comfyui-plugin-v3.1.1.zip
 ```
 
-> 说明：线上当前发布到 `v2.3.0`,而本仓库插件源码已是 `3.0.0`(`chp/2`,文档骨架改成 `rules` + `abilities` 两张表的那一版),想用最新源码请自行用上面的命令打包。发布包文件名与网站下载位的改动归在**正式发布**那一次动作里,所以上面那个链接仍是线上那份的名字;`python3 tools/package-plugin.py` 现在打出的是 `release/hamdraw-comfyui-plugin-v3.0.0.zip`。
+> 插件当前正式发布为 `3.1.1`。该版允许 `render` 采用 6 步 Viggle 加速档案；无加速档案时默认仍为 20 步。GitHub Release 使用独立标签 [`chp-v3.1.1`](https://github.com/zhyuzh3d/hamdraw/releases/tag/chp-v3.1.1)。
 >
 > **从旧版升级要先删掉 `custom_nodes/hamdraw_comfy/`**：新旧两个包会各自注册一遍路由,同时存在会让 ComfyUI 因重复注册而启动失败。
 

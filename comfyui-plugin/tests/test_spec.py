@@ -1021,6 +1021,25 @@ def check_request_accelerator() -> None:
           "SamplerCustomAdvanced 没有 steps 参数 —— 步数是 sigma 表的长度")
     check(job_of(submit(body_for("render")))["seed"] == 7, "种子照旧回填")
 
+    # 1b) render 也允许 Viggle 的 6 步档案；客户端不传 step, 由 sigma 表决定默认步数。
+    settings.update(accelerators={
+        "render": {"lora": "acc_viggle_6step.safetensors", "strength": 1.0, "sigmas": SIGMAS_VIGGLE},
+    })
+    job_of(submit(body_for("render", seed=6)))
+    graph = queued_graph()
+    check(graph["7"]["class_type"] == "SamplerCustomAdvanced", "render Viggle 档案应进入加速采样器")
+    check(graph["1a"]["inputs"]["lora_name"] == "acc_viggle_6step.safetensors",
+          "render 应挂载 Viggle LoRA")
+    check(graph["7b"]["inputs"]["sigmas"] == SIGMAS_VIGGLE,
+          "render 应使用完整的 Viggle sigma 表")
+    check(graph["7b"]["inputs"]["sigmas"].count(",") == 6,
+          "Viggle 六步档案应由七个 sigma 值确定")
+
+    # 后面的步数失配断言继续针对 PDD 4 步档案。
+    settings.update(accelerators={
+        "render": {"lora": "acc_pdd_4step_comfy.safetensors", "strength": 1.0, "sigmas": SIGMAS_PDD},
+    })
+
     # 2) 「只在自己那档步数上成立」: 客户端指定 8 步 ⇒ 不挂 LoRA, 走普通 KSampler。
     #    这是"读了但没用"的反面断言 —— 少了它, 一个"永远挂 LoRA"的实现也能全绿。
     job_of(submit(body_for("render", ext_params={"step": 8})))
