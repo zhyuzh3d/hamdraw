@@ -18,7 +18,9 @@ Four ideas hold it together:
 * **IO rules are spelled out once.**  ``txt-ref-2-img`` is split on its literal
   ``-2-``, and the signature and the schema key are *derived* from the modality
   list — so a rule's spelling has one source, and four categories cannot each
-  drift from it by hand.
+  drift from it by hand.  "Does this category take a reference picture" is
+  likewise read off that list (:func:`accepts_image`), never re-declared beside
+  it — a second copy is a second thing to forget.
 * **Canvases are a hand-written table** (:data:`FRAMES`), and the order in it is
   part of the contract: the first frame of a category is that category's
   default.  Nothing computes a canvas, so nothing can compute a different one
@@ -44,6 +46,10 @@ SPEC = "chp/2"
 
 API_ROOT = "/chp"
 
+#: ``request_id`` 的长度上限。它是发布的 schema 里的一条 (``maxLength``)，所以这个数
+#: 归本模块 —— ``server.py`` 从这里取，而不是各写一份。
+MAX_REQUEST_ID_CHARS = 200
+
 PLUGIN_ID = "hamdraw_chp"
 PLUGIN_LABEL = {"zh": "CHP 插件（ComfyUI Haminn Protocol）",
                 "en": "CHP plugin (ComfyUI Haminn Protocol)"}
@@ -60,16 +66,40 @@ ENDPOINTS: dict[str, str] = {
     "translate": f"{API_ROOT}/translate",
 }
 
-#: The IO rule table.  Two rules, and their modalities are written in the
+#: The IO rule table.  Three rules, and their modalities are written in the
 #: canonical order (``txt`` first, ``ref`` last) so a rule name can be compared
 #: as a string instead of being parsed.
+#:
+#: ``txt-2-img`` 是 2026-10-01 分出来的那条: **纯文字出图**, 一个字节的输入图都不带。
+#: 它和 ``txt-ref-2-img`` 不是同一条规则的两个用法 —— 是两条规则、两个类别, 因为
+#: "有没有参考图"决定的是图怎么搭, 而客户端要能**从规则本身**读出这件事, 而不是靠
+#: 试探。参考图能不能收、需不需要收, 由 :func:`has_reference` / :func:`needs_image`
+#: 从这张表算出来, 客户端不自己判。
 #:
 #: Nothing else spells a rule out: :func:`signature_of` and :func:`input_of`
 #: derive everything a client reads from the modality list below.
 RULES: dict[str, dict[str, Any]] = {
+    "txt-2-img": {"modalities": ("txt",), "output": "img"},
     "txt-ref-2-img": {"modalities": ("txt", "ref"), "output": "img"},
     "txt-msk-ref-2-img": {"modalities": ("txt", "msk", "ref"), "output": "img"},
 }
+
+
+def has_reference(rule: str) -> bool:
+    """这条规则收不收参考图 —— 由模态表算出来, 没有第二份副本。"""
+    return "ref" in tuple(RULES[str(rule)]["modalities"])
+
+
+def accepts_image(category: str) -> bool:
+    """这个类别收不收 ``image_base64``。"""
+    entry = CATEGORY_TABLE.get(str(category or "").strip().lower())
+    return bool(entry) and has_reference(str(entry["rule"]))
+
+
+def needs_image(category: str) -> bool:
+    """这个类别是不是**必须**带参考图。"""
+    entry = CATEGORY_TABLE.get(str(category or "").strip().lower())
+    return bool(entry) and bool((entry.get("needs") or {}).get("image"))
 
 
 def signature_of(rule: str) -> str:
@@ -115,15 +145,25 @@ FRAMES: dict[str, list[dict[str, Any]]] = {
     "upscale": [
         {"ratio": "1:1", "resolution": ["1024x1024", "2048x2048"]},
     ],
+    # 9:16 这一档在 2026-09-30 追加了两个**更低**的分辨率：一档 768×1344 太慢时，
+    # 客户端只剩"换接口"一条路可走。追加在数组**末尾**是有意的 —— 默认是第 0 条，
+    # 所以每个客户端默认发的仍然还是 768×1344，加档只把菜单变长，不改变任何既有行为。
+    #
+    # 2026-10-01：**整张表换成 Qwen-Image 2.1 自己的 9:16 档**（业主：「分辨率改用
+    # Qwen 2.1 推荐的 9:16 的档位」「只是 happ 要迁就 qwen2.1，不是相反」）。Qwen 2.1
+    # 公布的那两档竖幅是 768×1344（1K）与 1536×2688（2K）——两条边的比是 4:7。
+    # 2K 那条的高是 2688，远超 16 GB 卡能舒服跑的上限，所以三档**按同一个 4:7 几何**
+    # 取：高 896×1568（业主定的上限 1600 之内）、中就是官方 1K 原样、低 512×896
+    # （业主定的下限 500 之上）。三条都是 16 的倍数（Qwen 的 VAE 压缩倍率），
+    # 也都是 896/16=56、768/16=48、512/16=32 与 1344/16=84、1568/16=98 的整数边。
+    # 其余比例整条删掉：两个客户端要的都是竖幅，而"菜单越短、越不容易选错"。
+    # 默认仍然是第 0 条 ⇒ **中档**，低/高追加在它后面，规矩和上次一模一样。
     "render": [
-        {"ratio": "1:1", "resolution": ["1024x1024"]},
-        {"ratio": "9:16", "resolution": ["768x1344"]},
-        {"ratio": "16:9", "resolution": ["1344x768"]},
-        {"ratio": "3:4", "resolution": ["832x1152"]},
-        {"ratio": "4:3", "resolution": ["1152x832"]},
-        {"ratio": "2:3", "resolution": ["832x1216"]},
-        {"ratio": "3:2", "resolution": ["1216x832"]},
-        {"ratio": "21:9", "resolution": ["1536x640"]},
+        {"ratio": "9:16", "resolution": ["768x1344", "512x896", "896x1568"]},
+    ],
+    # 纯文字出图与参考图重绘**同一张画幅表**：它们是同一族模型的两条路，画幅该一致。
+    "generate": [
+        {"ratio": "9:16", "resolution": ["768x1344", "512x896", "896x1568"]},
     ],
 }
 
@@ -133,16 +173,16 @@ _FIELD_HELP = {
         "en": "Which functional scenario. The information document's rules list them.",
     },
     "resolution": {
-        "zh": "输出分辨率, 写成 \"宽x高\"(如 \"768x1344\")。只能取该类别帧表里列出的值; 省略取该类别第一档。",
-        "en": "Output resolution as \"WxH\" (e.g. \"768x1344\"). Only the values in that category's frames; omitted takes the first.",
+        "zh": "输出画幅, 写成 \"宽x高\"(如 \"768x1344\")。必填, 且只能取该类别帧表里列出的值 —— 低/中/高三档, 顺序就是帧表里的顺序。",
+        "en": "Output canvas as \"WxH\" (e.g. \"768x1344\"). Required, and only a value from that category's frames — low/mid/high, in the order the frames list them.",
     },
     "prompt": {
         "zh": "画面描述。是否需要先译成英文由 rules[].prompt.language 决定。",
         "en": "What to draw. Whether it must be English first is the rule's prompt.language.",
     },
     "image_base64": {
-        "zh": "参考图, PNG/JPEG 的 base64, 可直接给 data URL。",
-        "en": "Reference image as base64 PNG/JPEG; a data URL is accepted as-is.",
+        "zh": "参考图, PNG/JPEG 的 base64, 可直接给 data URL。只有规则里带 ref 的场景收它(见 rules[].signature); 纯文生图那条收了会被拒。",
+        "en": "Reference image as base64 PNG/JPEG; a data URL is accepted as-is. Only rules whose signature contains ref take it; the text-to-image rule refuses it.",
     },
     "mask_base64": {
         "zh": "蒙版, 黑底白区, 白色 = 要重画。",
@@ -164,6 +204,10 @@ _FIELD_HELP = {
         "zh": "CHP 层的扩展参数。目前只有 password。",
         "en": "CHP-layer extension parameters. Today only password.",
     },
+    "request_id": {
+        "zh": "可选。这次提交自己的编号, 由客户端生成。重发同一次提交时沿用同一个值, 服务端就还你**原来那个作业**, 不会再排一个; 换了内容就要换一个值。",
+        "en": "Optional. The client's own id for this submission. Send the same value when retrying the same submission and the server answers with the original job instead of queueing a second one; use a new value when the content changes.",
+    },
 }
 
 #: The request body every category shares, written once.  A rule whose modalities
@@ -171,7 +215,11 @@ _FIELD_HELP = {
 #: *generated* from this one rather than typed out, so the two can never drift.
 _BASE_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "required": ["category"],
+    # 2026-10-01 起, 每个场景都必须带**画幅**与**种子**这两件东西:
+    # 画幅是"这次要多大"（菜单里挑一个, 见 frames）, 种子是"可不可以重来"。
+    # 其余字段（步数、采样器、cfg…）都取部署侧配好的默认值 —— 它们不是客户端的事,
+    # 客户端想动就走 ext_params。``category`` 依旧是第一个必填项。
+    "required": ["category", "resolution", "seed"],
     "properties": {
         "category": {
             "type": "string",
@@ -187,7 +235,7 @@ _BASE_SCHEMA: dict[str, Any] = {
             "title": {"zh": "提示词", "en": "Prompt"}, "help": _FIELD_HELP["prompt"],
         },
         "seed": {
-            "type": "integer", "minimum": 0, "default": 0, "recommended": True,
+            "type": "integer", "minimum": 0, "default": 0,
             "title": {"zh": "随机种子", "en": "Seed"}, "help": _FIELD_HELP["seed"],
         },
         "ref_strength": {
@@ -209,6 +257,10 @@ _BASE_SCHEMA: dict[str, Any] = {
         "chp_params": {
             "type": "object", "additionalProperties": True, "default": {},
             "title": {"zh": "CHP 扩展参数", "en": "CHP extensions"}, "help": _FIELD_HELP["chp_params"],
+        },
+        "request_id": {
+            "type": "string", "maxLength": MAX_REQUEST_ID_CHARS,
+            "title": {"zh": "提交编号", "en": "Request id"}, "help": _FIELD_HELP["request_id"],
         },
     },
 }
@@ -289,21 +341,43 @@ CATEGORY_TABLE: dict[str, dict[str, Any]] = {
     "render": {
         "category": "render",
         "rule": "txt-ref-2-img",
-        "label": {"zh": "高质量生图", "en": "High quality render"},
+        "label": {"zh": "参考图重绘", "en": "Reference redraw"},
         "description": {
-            "zh": "重画成一张 1024 以内的成品图。比速写模型重得多, 单张要几十秒。",
-            "en": "Repaint the canvas into a finished picture up to 1024 px. Far heavier than a sketch model.",
+            "zh": "给一张图（定妆照、姿势骨架、随手一张照片）加一句描述，重画成一张成品图。",
+            "en": "Give it a picture — a character sheet, a pose skeleton, any photo — plus a line of text, and it repaints it into a finished image.",
         },
         "prompt": {"language": "any"},
-        # 带参考图就是参考图编辑, 不带就是纯文生图 —— 同一个类别的两种用法，
-        # 不是两个类别。底层 TextEncodeQwenImage21 的 images 输入 min=0，所以
-        # "没有参考图"是它明确支持的路径。
-        "needs": {"prompt": True, "image": False, "mask": False},
+        # 2026-10-01 定稿: render 就是"给定一张图重新生成", 所以参考图是**必需**的。
+        # "不带参考图"不再落在这里 —— 那是 generate 那条规则的事, 两个类别各说各话。
+        "needs": {"prompt": True, "image": True, "mask": False},
         "defaults": {"ref_strength": 0.95},
-        "typical_seconds": 45.0,
+        # 加速档案（PDD 4 步 + 显式 sigma 表 + 缩过的参考图）实测 5~15 s；没配加速档案
+        # 就是 20 步的几十秒。给一个大到不会把客户端催超时的数, 客户端只拿它当提示。
+        "typical_seconds": 20.0,
         "roles": ["unet", "clip", "vae"],
         "family": "qwen_image_21",
-        "steps": {"values": (12, 16, 20, 25, 30, 40), "default": 20},
+        # 4 / 6 两档是加速档案自己的步数（PDD 4 步、Viggle 6 步）—— 枚举里必须有它们,
+        # 否则 dispatcher 会把默认步数判成非法。20 是"没配加速档案时的正经挡位"。
+        "steps": {"values": (4, 8, 12, 20), "default": 20},
+    },
+    "generate": {
+        "category": "generate",
+        "rule": "txt-2-img",
+        "label": {"zh": "纯文生图", "en": "Text to image"},
+        "description": {
+            "zh": "只给一句描述，从零画一张成品图，不带任何参考图。",
+            "en": "A line of text and nothing else — a finished picture drawn from scratch, with no reference image at all.",
+        },
+        "prompt": {"language": "any"},
+        "needs": {"prompt": True, "image": False, "mask": False},
+        # 没有参考图 ⇒ 没有"参考权重"这个旋钮。发布一个按了没反应的默认值, 比不发布更糟:
+        # 客户端会以为自己调得动它。默认值表因此是空的, 而 shared schema 里那两条
+        # 与参考图有关的字段由客户端按 needs.image 决定发不发。
+        "defaults": {},
+        "typical_seconds": 25.0,
+        "roles": ["unet", "clip", "vae"],
+        "family": "qwen_image_21",
+        "steps": {"values": (6, 8, 12, 20), "default": 20},
     },
 }
 
@@ -465,6 +539,20 @@ def clamp_ref_strength(value: Any, fallback: float) -> float:
     return round(min(max(number, low), high), 4)
 
 
+def default_ref_strength(category: str) -> float:
+    """这个类别自己声明的参考权重默认值, 没有声明就给区间上界。
+
+    没有参考图的类别（``generate``）的 ``defaults`` 是空表 —— 那个旋钮对它不存在。
+    但请求体是一份共享的 schema, ``ref_strength`` 仍然是合法字段, 所以这里必须给一个
+    确定的答案, 而不是让调用方去 ``["defaults"]["ref_strength"]`` 上撞 KeyError。
+    """
+    entry = CATEGORY_TABLE[str(category)]
+    declared = (entry.get("defaults") or {}).get("ref_strength")
+    if declared is None:
+        return float(REF_STRENGTH_RANGE[1])
+    return float(declared)
+
+
 def clean_defaults(category: dict[str, Any]) -> dict[str, Any]:
     """The defaults a client may rely on, as plain JSON."""
     return json.loads(json.dumps(category["defaults"]))
@@ -581,9 +669,11 @@ def document(*, files_of: Callable[[str], Any], authorized: bool, auth_required:
 
 __all__ = [
     "ABILITY_NAMES", "API_ROOT", "CATEGORY_TABLE", "ENDPOINTS", "FRAMES",
-    "INPUT_SCHEMAS", "PLUGIN_ID", "PLUGIN_LABEL", "REF_STRENGTH_RANGE",
-    "ROLE_FOLDERS", "RULES", "SPEC", "abilities", "categories", "category_of",
-    "check_frames", "clamp_ref_strength", "clean_defaults", "default_resolution",
-    "document", "family_of", "frames_of", "input_of", "resolution_size",
-    "rule_entry", "rules", "signature_of", "validate_resolution", "validate_step",
+    "INPUT_SCHEMAS", "MAX_REQUEST_ID_CHARS", "PLUGIN_ID", "PLUGIN_LABEL",
+    "REF_STRENGTH_RANGE", "ROLE_FOLDERS", "RULES", "SPEC", "abilities",
+    "accepts_image", "categories", "category_of", "check_frames",
+    "clamp_ref_strength", "clean_defaults", "default_ref_strength",
+    "default_resolution", "document", "family_of", "frames_of", "has_reference",
+    "input_of", "needs_image", "resolution_size", "rule_entry", "rules",
+    "signature_of", "validate_resolution", "validate_step",
 ]

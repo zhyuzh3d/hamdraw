@@ -2,7 +2,7 @@
 
 CHP 是 **ComfyUI Haminn Protocol**；这个目录是它的**参考实现**，名字叫 `hamdraw_chp`。
 
-任何客户端（HamDraw 本体、其他开发者的工具、只会发 curl 的脚本）只要认下面这一个 HTTP 契约，就能用你已经装好的 ComfyUI 出图，**不需要自己导出工作流 JSON** —— 四个场景的图都内置在插件里。
+任何客户端（HamDraw 本体、其他开发者的工具、只会发 curl 的脚本）只要认下面这一个 HTTP 契约，就能用你已经装好的 ComfyUI 出图，**不需要自己导出工作流 JSON** —— 五个场景的图都内置在插件里。
 
 - 规范标识：`chp/2`（响应体里的 `spec`）
 - 接口根路径：`/chp`（**路径不版本化**；地址一律从文档的 `endpoints` 里读，客户端不要自己拼）
@@ -27,7 +27,7 @@ CHP 是 **ComfyUI Haminn Protocol**；这个目录是它的**参考实现**，�
 
    | 节点 | 用途 |
    |---|---|
-   | **HamDraw 配置 (Config)** | **用户唯一需要操作的节点**：设密码 + 选三套 checkpoint + 高质量生图那一路的三个槽位 + 翻译后端地址 |
+   | **HamDraw 配置 (Config)** | **用户唯一需要操作的节点**：设密码 + 选三套 checkpoint + 参考图重绘/纯文生图那两路的三个槽位与各自的加速 LoRA + 翻译后端地址 |
    | HamDraw 输入 / 输出 | 输入那个是给人看的观察窗口；输出那个是内置图引用的节点类。插件**不接受**用户自备的自定义工作流 |
 
 4. 想确认装好了：
@@ -36,7 +36,7 @@ CHP 是 **ComfyUI Haminn Protocol**；这个目录是它的**参考实现**，�
    curl -s http://127.0.0.1:8188/chp/info
    ```
 
-   返回 JSON，且 `spec` 为 `chp/2`、`plugin.version` 是你期望的那一版（当前 **3.0.0**）、每个能力的 `ready` 为 `true`，即成功。
+   返回 JSON，且 `spec` 为 `chp/2`、`plugin.version` 是你期望的那一版（当前 **3.1.0**）、每个能力的 `ready` 为 `true`，即成功。
 
    信息端点**密码填错也照答**（此时 `auth.authorized` 为 `false`），所以“地址对不对”和“密码对不对”可以一次问清：能返回 JSON 说明地址通，`authorized` 说明密码。
 
@@ -50,10 +50,33 @@ CHP 是 **ComfyUI Haminn Protocol**；这个目录是它的**参考实现**，�
 | `fast_checkpoint` | 快速生图用的模型，默认 `DreamShaper8_LCM.safetensors` |
 | `inpaint_checkpoint` | 局部重绘用的模型，可填 `(same as fast)` 复用上一个 |
 | `upscale_checkpoint` | 图像放大用的模型，同样支持 `(same as fast)` |
-| `qwen_unet` / `qwen_text_encoder` / `qwen_vae` | 高质量生图（`render`）那一路的**三个槽位**（diffusion model / 文本编码器 / VAE），与上面的 checkpoint 互不影响 |
+| `qwen_unet` / `qwen_text_encoder` / `qwen_vae` | `render` 与 `generate` 两路共用的**三个槽位**（diffusion model / 文本编码器 / VAE），与上面的 checkpoint 互不影响 |
+| `render_lora` / `render_lora_strength` / `render_sigmas` | `render` 那一路的**加速档案**（见下节），出厂留空 = 不加速 |
+| `generate_lora` / `generate_lora_strength` / `generate_sigmas` | `generate` 那一路的加速档案，同样出厂留空 |
 | `translate_prompts` / `translator_url` | 是否启用自动翻译，以及翻译后端地址 |
 
-**三套 checkpoint 其实是同一个槽位加两次覆盖**：`inpaint` / `upscale` 留空就回落到 `fast` 那个，所以只填一次也能跑三个场景；填了就用自己那个。`render` 那一路要三个文件都填齐才算 `ready`，只填一半时信息接口会把它标成 `ready: false` 并在 `abilities[].missing` 里点名缺哪个槽位。
+**三套 checkpoint 其实是同一个槽位加两次覆盖**：`inpaint` / `upscale` 留空就回落到 `fast` 那个，所以只填一次也能跑那三个场景；填了就用自己那个。`render` / `generate` 那两路要三个文件都填齐才算 `ready`，只填一半时信息接口会把它们标成 `ready: false` 并在 `abilities[].missing` 里点名缺哪个槽位。
+
+### 加速档案：省时间的那条路（部署调参，出厂留空）
+
+默认的 `render` / `generate` 走满步数（30 步左右），单张约 6.5 秒固定开销 + 每步 1.16 秒。给某一路配一份**加速档案**就换成"少步数 + 显式 sigma 表"：
+
+```json
+"accelerators": {
+  "render":   {"lora": "acc_pdd_4step_comfy.safetensors", "strength": 1.0,
+               "sigmas": "1.0, 0.9169867038726807, 0.7861579060554504, 0.5494909882545471, 0.0"},
+  "generate": {"lora": "acc_viggle_6step.safetensors",    "strength": 1.0,
+               "sigmas": "1.0, 0.9375, 0.875, 0.75, 0.5, 0.25, 0.0"}
+}
+```
+
+三条规矩：
+
+- **`sigmas` 的长度必须等于步数 + 1**，对不上整条档案不生效（那一档步数下的 sigma 表是模型训练时就定下的，凑不出来）。步数由长度反推，客户端一个 step 都不用发。
+- **只有配对的那个 LoRA 真的在 `models/loras` 里，档案才生效**。配了却没装不会报错，只在日志里留一行，然后**安静地退回满步数** —— 一台机器换硬盘不该让出图直接失败。
+- 加速只在**那一档步数**上成立，所以档案是按类别分的：`render` 用 4 步的 PDD（实测 5.4 秒，约 5.5 倍），`generate` 用 6 步的 Viggle（头部细节最好，实测见仓库 `plans/`）。
+
+档案**只在部署侧写**：一个"4 步蒸馏 LoRA"的文件名只对装了它的那台机器成立（同 `translate.url` 与 `cache_dtype`）。
 
 配置写在 `custom_nodes/hamdraw_chp/hamdraw_settings.json`（原子写、可手工编辑）；也可以直接用环境变量 `HAMDRAW_PASSWORD` 覆盖密码（适合容器/CI）。
 
@@ -63,22 +86,31 @@ CHP 是 **ComfyUI Haminn Protocol**；这个目录是它的**参考实现**，�
 
 **密码错了会怎样**：请求在**入队之前**就被拦下，返回 `401 unauthorized`，**不会生图**。客户端拿到的是一句可读的中文提示，而不是一张画错的图。
 
-## 四个场景（`category`）
+## 五个场景（`category`）
 
-`category` 就是请求体字段名，取值只有这四个，**没有别名**：`fast` / `inpaint` / `upscale` / `render`。
+`category` 就是请求体字段名，取值只有这五个，**没有别名**：`fast` / `inpaint` / `upscale` / `render` / `generate`。
 
-| `category` | 规则 | 画幅（帧表，首项即默认） | 步数枚举与默认 | 参考权重默认 | 提示词语言 | 说明 |
-|---|---|---|---|---|---|---|
-| `fast` | `txt-ref-2-img` | 1:1 `512x512`；4:3 `576x384`；3:4 `384x576` | 2 / 4 / 6 / **8** | 0.55 | **只认英文** | 把画布当参考图重绘一张速写稿 |
-| `inpaint` | `txt-msk-ref-2-img` | 同 `fast`（蒙版必须与画布同尺寸） | 4 / **6** / 8 / 12 | 0.30 | **只认英文** | **只重画白色蒙版区域**，其余原样保留 |
-| `upscale` | `txt-ref-2-img` | 1:1 `1024x1024`、`2048x2048` | 4 / **8** / 12 / 16 / 20 | 0.75 | **只认英文** | 参考图按**原分辨率**（上限 1024）直接编码；只有目标大于上限时才 latent 放大。**不要退回“先缩到 512 再放大”**——那等于在采样器看到参考图之前先模糊它一轮，渲染出来会发软、像被重新演绎过。 |
-| `render` | `txt-ref-2-img` | 八档：1:1 `1024x1024`、**9:16 `768x1344`**、16:9 `1344x768`、3:4 `832x1152`、4:3 `1152x832`、2:3 `832x1216`、3:2 `1216x832`、21:9 `1536x640` | 12 / 16 / **20** / 25 / 30 / 40 | 0.95 | **英文更佳**（中文也吃） | 用 Qwen-Image 2.1（官方 INT8）出成品图。**一个场景两种用法**：`needs.image = false`，**带参考图就是参考图编辑**（构图由参考图带来），**不带就是纯文生图**。比草图模型重得多，单张约 45 秒；模型是 unet + clip + vae 三元组。 |
+| `category` | 规则 | 参考图 | 画幅（帧表，首项即默认） | 步数枚举与默认 | 参考权重默认 | 提示词语言 | 说明 |
+|---|---|---|---|---|---|---|---|
+| `fast` | `txt-ref-2-img` | 要 | 1:1 `512x512`；4:3 `576x384`；3:4 `384x576` | 2 / 4 / 6 / **8** | 0.55 | **只认英文** | 把画布当参考图重绘一张速写稿 |
+| `inpaint` | `txt-msk-ref-2-img` | 要（+蒙版） | 同 `fast`（蒙版必须与画布同尺寸） | 4 / **6** / 8 / 12 | 0.30 | **只认英文** | **只重画白色蒙版区域**，其余原样保留 |
+| `upscale` | `txt-ref-2-img` | 要 | 1:1 `1024x1024`、`2048x2048` | 4 / **8** / 12 / 16 / 20 | 0.75 | **只认英文** | 参考图按**原分辨率**（上限 1024）直接编码；只有目标大于上限时才 latent 放大。**不要退回“先缩到 512 再放大”**——那等于在采样器看到参考图之前先模糊它一轮，渲染出来会发软、像被重新演绎过。 |
+| `render` | `txt-ref-2-img` | **要** | 9:16：`768x1344`（中，默认）/ `512x896`（低）/ `896x1568`（高） | 4 / 8 / 12 / **20** | 0.95 | **英文更佳**（中文也吃） | **给定一张图重新生成**：给张图（定妆照、姿势骨架、随手一张照片）加一句描述，重画成一张成品图 —— 构图由参考图带来。模型是 Qwen-Image 2.1（官方 INT8）的 unet + clip + vae 三件套。 |
+| `generate` | `txt-2-img` | **不收** | 9:16：`768x1344`（中，默认）/ `512x896`（低）/ `896x1568`（高） | 6 / 8 / 12 / **20** | — | **英文更佳** | **纯文字生成**：只给一句描述，从零画一张成品图，一个字节的输入图都不带。**没有定妆照时走这一条**（Chataxi 就是这么用的）。 |
+
+**步数只管"没配加速档案"的那条路**：客户端不发 `ext_params.step` 时，配了加速档案的场景走**档案自己那一档**（`render` 4 步 / `generate` 6 步），没配的走上表里的默认值（20）。枚举里留着 4 与 6 就是为了让加速档案那一档合法（见「加速档案」一节）。
+
+**`render` 与 `generate` 是两条规则、两个类别，不是同一条规则的两个用法**（2026-10-01 分开）。理由是"有没有参考图"决定的是**图怎么搭**：一条走参考条件生成，一条从空 latent 起步，两者连节点都不一样。把它做成"同一条规则，带不带图随你"会让客户端只能靠**试探**去发现这件事 —— 分开之后，客户端从规则名本身就看得出来（`txt-ref-2-img` 里有 `ref`，`txt-2-img` 里没有），而服务端也会**明确拒收**：给 `generate` 发 `image_base64` 回 `400 bad_image`，文案就是"这个场景不收参考图"。
+
+**就绪状态与画幅各归各的场景**：两条场景可以落在同一个模型文件组上（本实现里就是同一组 Qwen 三件套），也可以落在两组上；`abilities[].frames` 按 `category` 分开列，客户端按需读。
 
 **画幅就是这张表，没有第二条路。** 每个场景的 `frames` 是手写的，顺序是规范的一部分：第一档就是**省略 `resolution` 时的默认**。请求里的 `resolution` 是一个**字符串**（`"768x1344"`），只能逐项命中那张表，否则 `400 unsupported_size`。没有“域”，没有“这个比例合法但不在清单里”，也**没有需要客户端自己算的东西** —— 先把 `ratio` 列给用户选，再列该比例下的 `resolution`，两步零算术。
 
 `"9:16"` 是**标签不是算出来的比例**：`768 × 1344` 的精确比是 4:7，叫它 9:16 是作者定的类目名（和相机的画幅档位一个道理）。客户端**只显示、不反推**。
 
-**推荐模型**：DreamShaper8 LCM 系列（512 分辨率通常 1 秒左右出图）。`fast` / `inpaint` 建议就用它，不必换；`upscale` 用能接受 512 参考图、输出 1024/2048 的模型即可。`render` 走 Qwen-Image 那一族，与前三套的 checkpoint 完全独立。
+**`render` / `generate` 的三档是按 Qwen-Image 2.1 自己的竖幅档位定的**（2026-10-01，业主：「分辨率改用 Qwen 2.1 推荐的 9:16 的档位」「只是 happ 要迁就 qwen2.1，不是相反」）。Qwen 2.1 公布的两档竖幅是 `768×1344`（1K）与 `1536×2688`（2K），两条边的比是 4:7；2K 那条的高是 2688，远超 16 GB 卡能舒服跑的上限，所以三档**按同一个 4:7 几何**取：中就是官方 1K 原样、低 `512x896`、高 `896x1568`（业主定的上限 1600 之内、下限 500 之上）。三条边都是 16 的倍数（Qwen 的 VAE 压缩倍率）。默认是第 0 条 ⇒ **中档**；**加档一律往该档的数组末尾追加**，往前面插一条会让每个客户端的默认画幅一起换掉。其余比例整条删掉：两个客户端要的都是竖幅，而"菜单越短、越不容易选错"。
+
+**推荐模型**：DreamShaper8 LCM 系列（512 分辨率通常 1 秒左右出图）。`fast` / `inpaint` 建议就用它，不必换；`upscale` 用能接受 512 参考图、输出 1024/2048 的模型即可。`render` / `generate` 走 Qwen-Image 那一族，与前三套的 checkpoint 完全独立。
 
 ### 语言：谁认中文，由场景自己报
 
@@ -153,21 +185,22 @@ CHP 是 **ComfyUI Haminn Protocol**；这个目录是它的**参考实现**，�
 
 **本实现自己认识两个键**（这是它的行为，不是协议条文，所以写在这里而不是规范里）：
 
-- `ext_params.step` —— 步数。**枚举**，取值就是上表里那个枚举，越界 → `400 unsupported_steps`；省略取该场景自己的默认值。小数会被拒（`20.5` 不是 `20`）。
-- `ext_params.negative_prompt` —— 反向提示词。`render` 按 cfg 1 采样，它没有作用面，但插件照收。
+- `ext_params.step` —— 步数。**枚举**，取值就是上表里那个枚举，越界 → `400 unsupported_steps`；省略取该场景自己的那一档（配了加速档案就是档案的步数，否则是上表的默认值）。小数会被拒（`20.5` 不是 `20`）。
+- `ext_params.negative_prompt` —— 反向提示词。`render` / `generate` 按 cfg 1 采样，它没有作用面，但插件照收。
 
-### 提交体（两条规则共用一份 schema）
+### 提交体（每个类别共用一份基础 schema）
 
 | 字段 | 类别 | 说明 |
 |---|---|---|
-| `category` | 规则参数，必填 | `fast` / `inpaint` / `upscale` / `render` |
-| `resolution` | 规则参数，可省 | `"768x1344"` 这样的**字符串**，必须逐项命中该 `category` 的帧表；省略取该场景第一档 |
+| `category` | 规则参数，必填 | `fast` / `inpaint` / `upscale` / `render` / `generate` |
+| `resolution` | 规则参数，**必填** | `"768x1344"` 这样的**字符串**，必须逐项命中该 `category` 的帧表；少了 → `400 unsupported_size`，表外 → 同一个码 |
 | `prompt` | 规则参数 | 是否需要先译成英文由 `rules[].prompt.language` 决定 |
-| `seed` | 规则参数 | **留在顶层**：少了它前端就无法锁定重复生成。`0` = 每次不同 |
-| `ref_strength` | 规则参数 | 0.05–0.95，越界**夹到边界**并在 `job` 回显 |
-| `image_base64` / `mask_base64` | 规则参数 | 参考图 / 蒙版（**白 = 要重画**）。图片可直接给 data URL，插件自己解码；请求体上限 32 MB |
+| `seed` | 规则参数，**必填** | **留在顶层**：少了它前端就无法锁定重复生成（少发 → `400 bad_request`）。`0` = 每次不同 |
+| `ref_strength` | 规则参数 | 0.05–0.95，越界**夹到边界**并在 `job` 回显。只跟参考图一起发 —— 它是"要多像这张参考图"，没有图的时候没有意义 |
+| `image_base64` / `mask_base64` | 规则参数 | 参考图 / 蒙版（**白 = 要重画**）。图片可直接给 data URL，插件自己解码；请求体上限 32 MB。**规则签名里没有 `ref` 的类别（`generate`）收到 `image_base64` 会被拒**（`400 bad_image`）—— 这是"想画一张没有参考图的图"走错场景时唯一的当场信号 |
 | `ext_params` | 扩展通道 | 任意 JSON 对象 |
 | `chp_params` | 扩展通道 | 目前只有 `password` |
+| `request_id` | 提交身份，可省 | 你自己这次提交的编号。**重发同一次提交就沿用同一个值**，服务端还你原来那个作业、不会再排一个；内容变了就换一个值。见下节 |
 
 **其余顶层字段一律忽略，并把名字回显到 `job.ignored`。** 这条回执不是可选项：没有它，一次参数改名对客户端就是**静默失效**。`capability` / `task` / `size` / `steps` / `negative_prompt` 这五个 v1 的顶层字段现在都不认了 —— 客户端漏改时会当场在 `ignored` 里看到自己发错的那个名字（甚至没带 `category` 时那份 `400` 的 `detail` 里也带着这份名单）。
 
@@ -180,15 +213,31 @@ CHP 是 **ComfyUI Haminn Protocol**；这个目录是它的**参考实现**，�
   "ref_strength": 0.55,
   "image_base64": "data:image/png;base64,...",
   "ext_params": { "step": 8, "negative_prompt": "" },
-  "chp_params": { "password": "<password>" }
+  "chp_params": { "password": "<password>" },
+  "request_id": "0f9c1e2a-…"
 }
 ```
+
+### `request_id`：一次提交只出一个作业
+
+**要解决的问题是真的**：一次提交在服务端跑了 20 秒、回程却断了（客户端等超时、换了网络、App 被杀），这时**图已经生成好了**，而客户端手里没有作业号 —— 它只能再提交一次，于是队列里多出一个作业，第一张图谁也没来取。
+
+`request_id` 就是给这次提交一个身份，规则四条：
+
+| 情形 | 服务端 |
+|---|---|
+| 键没见过 | 正常提交，`202` + `"replayed": false`，键记住 |
+| 同一个键 + **同样的内容** | **不排队、不写图**，直接答**原来那个作业的此刻状态**，`202` + `"replayed": true` |
+| 同一个键 + 换过的内容 | `409 duplicate_request` —— 一个键只装一次提交，改内容就换个键 |
+| 同一个键、上一次**还在处理中** | `409 duplicate_request` —— 稍后用同一个键再问一次即可 |
+
+**内容**指的是除 `chp_params`（那是密码）和 `request_id` 自己以外的整个请求体；字段顺序不影响判定。**提交失败（`no_model` / `bad_image` / 校验不过…）会把键还回来**，所以一次失败不会挡住你自己的重试。整个字段是可选的：`request_id` 一个都不发的旧客户端照常工作。
 
 完成后的 `outputs[n].url` 就是文档里公布的模板拼出来的那条 `/chp/jobs/...`，**客户端直接拼服务器地址去下就行，不要再拼一层**。
 
 `job` 对象里三个字段回答“提示词到底发生了什么”：`prompt_source` 是客户端给的原文、`prompt` 是实际送进模型的那份、`translated` 表示两者是否不同。
 
-错误码：`unauthorized(401)` / `bad_request` / `unsupported_category` / `unsupported_size` / `unsupported_steps` / `bad_image` / `bad_mask` / `stretched_reference` / `invalid_workflow` / `no_model(409)` / `busy(429)` / `not_found(404)` / `internal(500)`，全部带可读中文文案。`/chp/info` 的 `errors` 就是这份清单，所以客户端不必自己抄一遍。
+错误码：`unauthorized(401)` / `bad_request` / `unsupported_category` / `unsupported_size` / `unsupported_steps` / `bad_image` / `bad_mask` / `stretched_reference` / `invalid_workflow` / `no_model(409)` / `busy(429)` / `duplicate_request(409)` / `not_found(404)` / `internal(500)`，全部带可读中文文案。`/chp/info` 的 `errors` 就是这份清单，所以客户端不必自己抄一遍。
 
 ### `/cvp` 与 `/hamdraw/v1` 都不存在了
 
@@ -220,7 +269,7 @@ curl -s -X POST http://<host>:8188/chp/jobs -H 'Content-Type: application/json' 
        "mask_base64":"data:image/png;base64,...","chp_params":{"password":"<password>"}}'
 ```
 
-用 `python3 -m json.tool` 过一遍第 1 步的返回，重点确认五件事：`spec` 是 `chp/2`、`rules` 有你预期的四条、`abilities` 的 `ready` 为 `true`、每个 `category` 至少命中一帧、`input_schemas` 恰好两份。
+用 `python3 -m json.tool` 过一遍第 1 步的返回，重点确认五件事：`spec` 是 `chp/2`、`rules` 有你预期的五条、`abilities` 的 `ready` 为 `true`、每个 `category` 至少命中一帧、`input_schemas` 恰好三份（三条规则各一份）。
 
 - **第一次请求会慢**（模型加载，约十几秒），之后同模型重跑约 1 秒；别用首单判断“模型太慢”。
 - 在 HamDraw App 里对接：设置 → 模型配置 → 接口模式选「CHP 插件（ComfyUI Haminn Protocol）」，服务器地址填 `http://<host>:<port>`，访问密码填节点里设的那个。

@@ -1,13 +1,31 @@
 """The Qwen-Image 2.1 family: a diffusion model + text encoder + VAE triple.
 
-这是本插件唯一"两种用法"的家族, 而且这个区别来自模型自己:
+这个家族服务**两个类别**, 而它们的区别来自模型自己、不是来自实现:
 
-* **带参考图** —— 参考图与提示词一起进编码器, 再作为 reference latent 拼进序列, 这就是
-  参考图编辑。
-* **不带参考图** —— 纯文生图。核心节点 ``TextEncodeQwenImage21`` 的 ``images`` 输入
-  ``min = 0``, 空着是它明确支持的路径, 所以这里不需要拿一张白图去凑。
+* **``render``（``txt-ref-2-img``）** —— 参考图与提示词一起进编码器, 再作为 reference
+  latent 拼进序列, 这就是参考图编辑。
+* **``generate``（``txt-2-img``）** —— 纯文生图。核心节点 ``TextEncodeQwenImage21`` 的
+  ``images`` 输入 ``min = 0``, 空着是它明确支持的路径, 所以这里不需要拿一张白图去凑;
+  而不带参考图时**不建** LoadImage / ImageScaleToTotalPixels / ImageBlur 那一串。
 
 采样永远从空 latent 起步、``denoise = 1``(见下面对 ref_strength 的说明)。
+
+**★ 加速档案（2026-10-01 新增）** —— 这是本家族跟别的家族唯一的形状差别。
+
+Qwen-Image 2.1 有四支"少步数"蒸馏 LoRA（PDD 4 步 / Pruna 8 步 / Viggle 6 步…）。实测
+结论写在技能 ``a1x-comfy-device`` §4.18 里, 一句话是: **它们不省时间, 买的是"4 步别糊"**。
+要挂它们, 图必须换两处, 而两处都属于"实现细节"、不属于契约:
+
+1. 加速 LoRA 插在 ``UNETLoader`` 之后、``QwenImage21Cache`` 之前（``LoraLoaderModelOnly``）;
+2. **sigma 表必须显式给** —— 本机 QwenImage 走 ``ModelSamplingFlux``, ``KSampler=simple``
+   出的是位移表（4 步 ``[1.0, 0.90453, …, 0.0]``）, 与 PDD 训练用的那张不同。所以要把
+   ``KSampler`` 换成 ``KSamplerSelect + ManualSigmas + RandomNoise + CFGGuider →
+   SamplerCustomAdvanced`` 这五件套。
+
+档案从部署侧（``hamdraw_settings.json`` 的 ``accelerators``）交进来, 不走 HTTP。它只在
+**自己那档步数**上成立 —— sigma 表的长度就是它的步数加一, 对不上就不挂 LoRA、
+老老实实走 ``KSampler``。所以一个客户端把 ``ext_params.step`` 改成别的数, 拿到的是
+"没有加速的这张图", 而不是"挂着一份用错的 sigma 表的图"。
 
 This is a *reference-conditioned* generator, not img2img, and that changes what
 the reference-strength knob has to mean.  Sampling always starts from an empty
@@ -35,6 +53,11 @@ ROLES: tuple[str, ...] = ("unet", "clip", "vae")
 #: Extra knobs this family takes from the settings file.  Declared so the
 #: dispatcher can hand a family its own options and nothing else.
 OPTIONS: tuple[str, ...] = ("cache_device", "cache_dtype", "reference_edge")
+
+#: This family can be handed an acceleration profile.  The dispatcher passes
+#: one only to families that say so here — a family with no use for it never
+#: sees an argument it cannot name.
+ACCELERATOR = True
 
 #: Extension keys this family understands, out of the caller's ``ext_params``.
 #: Same pair as the checkpoint family; ``step`` is this implementation's own key,
@@ -119,6 +142,16 @@ def _reference_blur(fade: float) -> dict[str, Any]:
             "_meta": {"title": "HamDraw reference strength"}}
 
 
+def sigma_text(values: Any) -> str:
+    """把一张 sigma 表写成 ``ManualSigmas`` 吃的那种逗号串。
+
+    ``repr`` 而不是 ``%.4f``: PDD 那张表是 ``0.9169867038726807`` 这种带着训练时的
+    全精度的数, 截到四位小数就等于自己改了厂商的调度表 —— 而改动之后出图只是"略微
+    不一样", 没人看得出来。
+    """
+    return ", ".join(repr(float(value)) for value in values)
+
+
 def build(
     *,
     models: dict[str, Any],
@@ -128,8 +161,8 @@ def build(
     prompt: str = "",
     negative_prompt: str = "",
     seed: int = 0,
-    # 扩展参数，所以带默认值：真正的默认值按类别取自类别表（render 20），由
-    # dispatcher 交进来；这个数是直接调用本函数时的兜底。
+    # 扩展参数，所以带默认值：真正的默认值按类别取自类别表，由 dispatcher 交进来；
+    # 这个数是直接调用本函数时的兜底。
     step: int = 20,
     size: tuple[int, int],
     sampling: dict[str, Any],
@@ -137,6 +170,8 @@ def build(
     cache_device: str = "auto",
     cache_dtype: str = "default",
     reference_edge: Any = REFERENCE_EDGE,
+    # 部署侧的加速档案: ``{lora, strength, steps, sigmas}``，空表 = 不加速。
+    accelerator: dict[str, Any] | None = None,
     filename_prefix: str = "hamdraw/hamdraw",
 ) -> dict[str, Any]:
     """A graph that mirrors the model's own contract rather than pretending it is
@@ -146,12 +181,19 @@ def build(
     a conditioning pair, and the sampler runs from an empty latent at
     ``denoise = 1``.
 
-    ``image`` 为空就是纯文生图: 不建 LoadImage / ImageScaleToTotalPixels / ImageBlur, 也不给
-    节点挂参考图输入。这不是特例分支, 而是这个模型本来就支持的两种用法之一。
+    ``image`` 为空就是纯文生图（``generate`` 那条规则）: 不建 LoadImage /
+    ImageScaleToTotalPixels / ImageBlur, 也不给节点挂参考图输入。这不是特例分支, 而是
+    这个模型本来就支持的两种用法之一 —— 两个类别共用这一个 builder, 正是因为它俩
+    只差"有没有那张图"。
 
     带参考图时先按 ``reference_edge`` 把图缩到"约 edge² 像素"(按面积缩, **保持源图自己的
     比例**), 再把这个 edge 作为 ``resolution`` 交给它 —— 于是它拿到手就不会再缩第二次。
     画幅**不来自参考图**: 它由采样 latent 决定, 参考图只提供"长什么样"。
+
+    ``accelerator`` 非空且它自己的步数正好等于 ``step`` 时, 图里多两样东西: 一个
+    ``LoraLoaderModelOnly``, 以及用 ``ManualSigmas`` 顶掉 ``KSampler`` 的
+    ``SamplerCustomAdvanced`` 五件套。理由见模块开头。**只在这一档步数上成立**: sigma
+    表的长度就是它的步数加一, 对不上就整条不生效, 而不是拿一张用错的表去采样。
     """
     if masked:
         # The category declares needs.mask false, so the HTTP layer never
@@ -165,16 +207,23 @@ def build(
     if not (unet and clip and vae):
         raise ValueError("no_model")
 
+    profile = dict(accelerator or {})
+    sigmas = [float(value) for value in (profile.get("sigmas") or [])]
+    accelerated = bool(str(profile.get("lora") or "").strip()) and len(sigmas) >= 2 \
+        and len(sigmas) - 1 == int(step)
+
     width, height = int(size[0]), int(size[1])
     fade = reference_fade(ref_strength)
     reference = bool(str(image or "").strip())
     # 参考图永远不会被放大到比画布还大: 那既不会多出细节, 又要多算一遍。
     edge = min(clamped_edge(reference_edge, REFERENCE_EDGE), max(width, height))
 
+    # 加速时模型链条多一跳: UNETLoader → LoRA → 缓存 → 采样。
+    model_source: list[Any] = ["1a", 0] if accelerated else ["1", 0]
+
     nodes: dict[str, Any] = {
         "9": graph.output_node(["8", 0], filename_prefix),
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}},
-        "7": graph.sampler(["4", 0], ["5", 0], ["5", 1], ["6", 0], seed, step, sampling, 1.0),
         "6": {"class_type": "EmptyLatentImage",
               "inputs": {"width": width, "height": height, "batch_size": 1}},
         "5": {
@@ -191,13 +240,40 @@ def build(
             "_meta": {"title": "HamDraw prompt and reference"},
         },
         "4": {"class_type": "QwenImage21Cache",
-              "inputs": {"model": ["1", 0], "device": str(cache_device or "auto"),
+              "inputs": {"model": model_source, "device": str(cache_device or "auto"),
                          "dtype": str(cache_dtype or "default")},
               "_meta": {"title": "HamDraw text cache"}},
         "3": graph.vae_node(vae),
         "2": graph.clip_node(clip, CLIP_TYPE),
         "1": graph.unet_node(unet),
     }
+    if accelerated:
+        nodes["7"] = {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {"noise": ["7c", 0], "guider": ["7d", 0], "sampler": ["7a", 0],
+                       "sigmas": ["7b", 0], "latent_image": ["6", 0]},
+            "_meta": {"title": "HamDraw sampler"},
+        }
+        nodes["7a"] = {"class_type": "KSamplerSelect",
+                       "inputs": {"sampler_name": str(sampling.get("sampler") or "euler")},
+                       "_meta": {"title": "HamDraw sampler kind"}}
+        nodes["7b"] = {"class_type": "ManualSigmas", "inputs": {"sigmas": sigma_text(sigmas)},
+                       "_meta": {"title": "HamDraw sigma schedule"}}
+        nodes["7c"] = {"class_type": "RandomNoise", "inputs": {"noise_seed": int(seed)},
+                       "_meta": {"title": "HamDraw noise"}}
+        nodes["7d"] = {"class_type": "CFGGuider",
+                       "inputs": {"model": model_source, "positive": ["5", 0],
+                                  "negative": ["5", 1],
+                                  "cfg": float(sampling.get("cfg", 1.0))},
+                       "_meta": {"title": "HamDraw guidance"}}
+        nodes["1a"] = {"class_type": "LoraLoaderModelOnly",
+                       "inputs": {"model": ["1", 0],
+                                  "lora_name": str(profile["lora"]).strip(),
+                                  "strength_model": float(profile.get("strength", 1.0))},
+                       "_meta": {"title": "HamDraw accelerator"}}
+    else:
+        nodes["7"] = graph.sampler(model_source, ["5", 0], ["5", 1], ["6", 0], seed, step,
+                                   sampling, 1.0)
     if reference:
         # "10" loads the picture, "11" shrinks it to the reference budget, and "12"
         # is what the encoder actually sees: "11" as it is, or "11" softened by
@@ -215,5 +291,5 @@ def build(
     return nodes
 
 
-__all__ = ["CLIP_TYPE", "OPTIONS", "REFERENCE_EDGE", "ROLES", "build", "clamped_edge",
-           "reference_fade", "reference_megapixels"]
+__all__ = ["ACCELERATOR", "CLIP_TYPE", "OPTIONS", "REFERENCE_EDGE", "ROLES", "build",
+           "clamped_edge", "reference_fade", "reference_megapixels", "sigma_text"]

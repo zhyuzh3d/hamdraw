@@ -51,20 +51,41 @@ RECOMMENDED_CHECKPOINT = "DreamShaper8_LCM.safetensors"
 TRANSLATE_TIMEOUT_RANGE = (3.0, 120.0)
 TRANSLATE_MEMORY_RANGE = (0, 200000)
 
+#: 加速 LoRA 的强度。0 等于不挂, 2 已经是能把图拧坏的上限 —— 这里只挡住明显的手滑。
+ACCELERATOR_STRENGTH_RANGE = (0.0, 2.0)
+
+#: 哪几个类别走"三件套"而不是单个 checkpoint —— 由类别表的 roles 算出来, 不另写一份。
+TRIPLE_TASKS: tuple[str, ...] = tuple(
+    name for name in TASKS if "checkpoint" not in capabilities.CATEGORY_TABLE[name]["roles"])
+
+#: 每个类别的采样默认值。checkpoint 那一族是 LCM 快手（cfg 2.0 才有作用）;
+#: Qwen 那一族是 flow 模型, cfg 1.0 就是"不做 classifier-free guidance", 这也是它的
+#: negative prompt 不起作用的原因 —— cfg 1 时没有可绕开的方向。
+SAMPLING_DEFAULTS: dict[str, dict[str, Any]] = {
+    "fast": {"sampler": "lcm", "scheduler": "sgm_uniform", "cfg": 2.0},
+    "inpaint": {"sampler": "lcm", "scheduler": "sgm_uniform", "cfg": 2.0},
+    "upscale": {"sampler": "lcm", "scheduler": "sgm_uniform", "cfg": 2.0},
+    "render": {"sampler": "euler", "scheduler": "simple", "cfg": 1.0},
+    "generate": {"sampler": "euler", "scheduler": "simple", "cfg": 1.0},
+}
+
 DEFAULTS: dict[str, Any] = {
     "schema": SCHEMA,
     "password": "",
-    "checkpoints": {"fast": RECOMMENDED_CHECKPOINT, "inpaint": "", "upscale": "", "render": ""},
-    "models": {"render": {"unet": "", "clip": "", "vae": ""}},
-    "sampling": {
-        "fast": {"sampler": "lcm", "scheduler": "sgm_uniform", "cfg": 2.0},
-        "inpaint": {"sampler": "lcm", "scheduler": "sgm_uniform", "cfg": 2.0},
-        "upscale": {"sampler": "lcm", "scheduler": "sgm_uniform", "cfg": 2.0},
-        # A flow model sampled without classifier-free guidance (cfg 1.0), which
-        # is also why its negative prompt has no effect: at cfg 1 there is
-        # nothing to steer away from.
-        "render": {"sampler": "euler", "scheduler": "simple", "cfg": 1.0},
-    },
+    "checkpoints": {name: RECOMMENDED_CHECKPOINT if name == "fast" else "" for name in TASKS},
+    "models": {name: {role: "" for role in capabilities.CATEGORY_TABLE[name]["roles"]}
+               for name in TRIPLE_TASKS},
+    "sampling": {name: dict(SAMPLING_DEFAULTS[name]) for name in TASKS},
+    # 加速档案: 按类别配, 出厂**留空**。这不是省事, 是这份文件的规矩 —— 一个"4 步蒸馏
+    # LoRA"的文件名只对装了它的那台机器成立, 写进出厂默认就是把一台机器的权宜值当成了
+    # 所有人的契约（同 ``translate.url`` 与 ``cache_dtype``）。哪台机器想快, 就在它自己的
+    # ``hamdraw_settings.json`` 里写:
+    #     "accelerators": {"render": {"lora": "acc_pdd_4step_comfy.safetensors",
+    #                                 "strength": 1.0,
+    #                                 "sigmas": "1.0, 0.9169867038726807, 0.7861579060554504,
+    #                                            0.5494909882545471, 0.0"}}
+    # ``sigmas`` 的长度就是它的步数加一 —— 加速只在那一档步数上成立, 见 families/qwen_image.py。
+    "accelerators": {},
     # Per-family knobs that are genuinely deployment tuning rather than contract.
     # The shipped defaults carry no deployment: ``auto`` and the node's own
     # ``reference_edge`` are what the model's author would pick, and a box that
@@ -158,6 +179,16 @@ def _merge(base: dict[str, Any], stored: dict[str, Any]) -> dict[str, Any]:
                 if text:
                     slot[key] = text
 
+    stored_accelerators = stored.get("accelerators")
+    if isinstance(stored_accelerators, dict):
+        for name in TASKS:
+            entry = stored_accelerators.get(name)
+            if not isinstance(entry, dict):
+                continue
+            merged = _accelerator_entry(entry)
+            if merged:
+                base["accelerators"][name] = merged
+
     translation = stored.get("translate")
     if isinstance(translation, dict):
         value = translation.get("enabled")
@@ -230,6 +261,50 @@ def family_options(name: str) -> dict[str, str]:
     return {key: text for key, text in ((key, _family_option(value)) for key, value in entry.items()) if text}
 
 
+def _sigmas(value: Any) -> list[float]:
+    """一张 sigma 表: 逗号串或数组都收, 有一个读不出来就整张作废。
+
+    "整张作废"是有意的 —— 一张砍掉中间某个数的表仍然是一张**能跑**的表, 只是它调度的
+    不是那个 LoRA 训练时的噪声水平, 出图只是"稍微不一样"。这种错没人看得出来, 所以宁可
+    不加速, 也不能拿一张残表去采样。
+    """
+    if isinstance(value, str):
+        parts: list[Any] = value.replace("\n", " ").split(",")
+    elif isinstance(value, (list, tuple)):
+        parts = list(value)
+    else:
+        return []
+    values: list[float] = []
+    for part in parts:
+        try:
+            values.append(float(str(part).strip()))
+        except (TypeError, ValueError):
+            return []
+    return values
+
+
+def _accelerator_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """One stored ``accelerators.<category>`` entry, normalised; ``{}`` if unusable."""
+    lora = str(entry.get("lora") or "").strip()
+    sigmas = _sigmas(entry.get("sigmas"))
+    if not lora or len(sigmas) < 2:
+        return {}
+    return {"lora": lora,
+            "strength": _number(entry.get("strength"), 1.0, ACCELERATOR_STRENGTH_RANGE),
+            "sigmas": sigmas}
+
+
+def accelerator(category: str) -> dict[str, Any]:
+    """One category's acceleration profile, or ``{}`` when this box has none.
+
+    ``{}`` 是**正常状态**, 不是错误: 出厂默认就是没有加速档案, 因为一个 LoRA 的文件名
+    只对装了它的那台机器成立。有档案时返回 ``{lora, strength, sigmas}`` —— 步数不在里面,
+    它是 ``len(sigmas) - 1``, 由调用方一起算出来的东西不该有第二份。
+    """
+    stored = (load().get("accelerators") or {}).get(str(category or "").strip().lower())
+    return _accelerator_entry(stored) if isinstance(stored, dict) else {}
+
+
 def update(**fields: Any) -> dict[str, Any]:
     """Merge a partial settings patch into the stored file and return the result."""
     with _LOCK:
@@ -293,6 +368,25 @@ def update(**fields: Any) -> dict[str, Any]:
                     text = _family_option(value)
                     if text:
                         slot[str(key)] = text
+
+        accelerators = fields.get("accelerators")
+        if isinstance(accelerators, dict):
+            target = stored.setdefault("accelerators", {})
+            if not isinstance(target, dict):
+                target = stored["accelerators"] = {}
+            for name in TASKS:
+                entry = accelerators.get(name)
+                if not isinstance(entry, dict):
+                    continue
+                # 空表 = **撤掉**这台机器的加速档案（回到"没有加速"那条路）, 而不是
+                # 留一个半成品: 一个只写了一半的档案会让默认步数算不出来。
+                merged = _accelerator_entry(entry)
+                if merged:
+                    slot = dict(entry)
+                    slot["sigmas"] = list(merged["sigmas"])
+                    target[name] = slot
+                else:
+                    target.pop(name, None)
 
         translation = fields.get("translate")
         if isinstance(translation, dict):
