@@ -26,6 +26,10 @@ https://github.com/user-attachments/assets/64923327-a8eb-4864-b0fc-7e51539d1718
 
 > 原始文件与站内可直接播放的版本会随后一起补进 [`demo/`](./demo) 目录。
 
+**03 · 湖边现代别墅（YouTube Shorts）** —— 点击封面观看 HamDraw 绘制演示：
+
+<a href="https://youtube.com/shorts/uZ7eTNuiZs0?si=BQV1gsu6fFP47qx0"><img src="docs/assets/hamdraw-lakeside-villa-short-thumbnail.jpg" alt="观看 HamDraw 湖边现代别墅绘制演示" width="240"></a>
+
 ## 主要能力
 
 - **紧凑绘图工作台**：左对齐品牌与版本,画布上方单行提示词,可切换的成图层顺序,独立生成操作区,点击主要操作后显示简短用途说明。
