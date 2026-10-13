@@ -218,11 +218,13 @@ assert.equal((providersJs.match(/if \(canvasProblem\) throw canvasProblem;/g) ||
 assert.ok(providersJs.includes("function chpSlotCategory") && providersJs.includes("var category = chpSlotCategory(name);") && !settingsJs.includes("providers.capabilitySizes(name)"), "a slot's category must be resolved before the plugin's document is read on its behalf; the preset is what reads it now");
 assert.ok(storeJs.includes("function shareChpConnection") && storeJs.includes('["quick", "inpaint", "upscale"].forEach') && storeJs.includes("model.endpoint = connection.endpoint") && storeJs.includes("var value = shareChpConnection(app.utils.merge(app.defaults, config))"), "one CHP connection must be re-derived into every CHP task on load and on save, so editing it anywhere edits all three");
 assert.ok(settingsJs.includes("var shared = draft.connection") && settingsJs.includes('var sharedField = chp && ["endpoint", "apiKey", "customHeaders"].indexOf(field.name) >= 0') && settingsJs.includes("if (sharedField) shared[field.name] = value"), "the model dialog must read and write the one shared CHP connection while leaving the other formats alone");
-assert.ok(settingsJs.includes("data-plugin-download") && settingsJs.includes("async function downloadPlugin") && settingsJs.includes("bridge.files.beginWrite(") && settingsJs.includes("bridge.files.appendBytes(") && settingsJs.includes("bridge.files.finishWrite(") && settingsJs.includes("bridge.files.export(") && settingsJs.includes('root.querySelector("[data-plugin-download]")') && settingsJs.includes("pluginButton.onclick = ui.action(downloadPlugin)"), "the CHP form must offer the bundled plugin through the host file writer and the system save dialog, not a download");
-assert.ok(html.includes('src="./app/assets/comfyui-plugin.js"'), "the bundled plugin bytes must be part of the runtime script list");
-const pluginBundleJs = fs.readFileSync(path.join(root, "app/assets/comfyui-plugin.js"), "utf8");
-assert.ok(/app\.comfyuiPlugin = \{[\s\S]*name: "hamdraw-comfyui-plugin-v[0-9.]+\.zip"[\s\S]*base64:/.test(pluginBundleJs), "the generated asset must expose the archive name and its bytes");
-assert.ok(pluginBundleJs.length > 20000 && !/\b(?:import|export)\s/.test(pluginBundleJs), "the embedded archive must carry real bytes and stay a plain script");
+// The CHP plugin is installed on the machine that runs ComfyUI, not shipped inside
+// this happ (the split moved its sources to the `haminn-chp` repository). So the
+// assertions that used to pin the bundled archive are replaced by the reverse ones:
+// no embedded bytes, no download button, no generator that could bring them back.
+assert.ok(!html.includes("comfyui-plugin.js"), "the happ must not embed the CHP plugin archive; it is downloaded from the website");
+assert.ok(!settingsJs.includes("data-plugin-download") && !settingsJs.includes("downloadPlugin") && !settingsJs.includes("app.comfyuiPlugin"), "the CHP form must not offer an in-app plugin download any more");
+assert.ok(!fs.existsSync(path.join(root, "app/assets/comfyui-plugin.js")) && !fs.existsSync(path.join(root, "tools/embed-plugin.py")), "nothing may regenerate the embedded plugin archive");
 assert.ok(settingsJs.includes("function helpLine") && settingsJs.includes("function helpSection") && settingsJs.includes('class="help-icon"') && componentsCss.includes(".help-icon{box-sizing:border-box;flex:0 0 auto"), "every help line must lead with the tool's own icon");
 // The sheet is a map of the toolbars, so the icons it prints must be the icons the
 // toolbars paint. Asserting a few of them keeps a rewrite from quietly dropping them.

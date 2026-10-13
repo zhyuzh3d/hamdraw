@@ -1,6 +1,6 @@
 # 贡献指南
 
-感谢你愿意为 **HamDraw** 出力。HamDraw 是运行在 Haminn 宿主里的原生页面 happ,还带一个 ComfyUI 插件(CHP)。本文件说明提 Issue,提 Pull Request,本地开发与自检,代码风格与红线。动手前请先读一遍,并顺带读一下仓库里的 `AGENTS.md` 与 `guid.md`。
+感谢你愿意为 **HamDraw** 出力。HamDraw 是运行在 Haminn 宿主里的原生页面 happ,通过 **CHP**(Haminn 综合入口程序)接入本机模型。本文件说明提 Issue,提 Pull Request,本地开发与自检,代码风格与红线。动手前请先读一遍,并顺带读一下仓库里的 `AGENTS.md` 与 `guid.md`。
 
 ## 提 Issue
 
@@ -11,7 +11,7 @@
 ## 提 Pull Request
 
 1. Fork 本仓库并从 `main` 切出特性分支。分支名建议 `fix/短描述`,`feat/短描述`,`doc/短描述`。
-2. 一个 PR 只做一件事,只改与目标直接相关的文件。改动 ComfyUI 插件时请说明它对应 `comfyui-plugin/hamdraw_chp/version.py` 的哪个版本。
+2. 一个 PR 只做一件事,只改与目标直接相关的文件。**CHP 插件已独立成仓**(`zhyuzh3d/haminn-chp`),要改插件请去那个仓。
 3. 提交前跑与改动相称的自检(见下),在 PR 描述里写清：改了什么,为什么,怎么验证的。
 4. 向 `main` 发起 PR,描述里关联相关 Issue(如 `Closes #12`)。
 
@@ -35,7 +35,7 @@ HamDraw 是纯原生页面,**没有构建步骤**,源文件直接运行,直接�
 python3 ~/.workbuddy/skills/haminn-dev-plugin/haminn-agent.py develop-dir <目录> --quiet
 ```
 
-ComfyUI 插件(本地出图链路)的安装与自测见 [comfyui-plugin/README.md](./comfyui-plugin/README.md)。
+CHP 插件(本地出图链路)的安装与自测见独立仓 [haminn-chp](https://github.com/zhyuzh3d/haminn-chp)。
 
 ## 自检
 
@@ -45,7 +45,6 @@ ComfyUI 插件(本地出图链路)的安装与自测见 [comfyui-plugin/README.m
 node tools/verify.mjs --source-only  # 打包前:含跨模块导出检查与静态断言
 node tools/verify.mjs                # 完整自检
 python3 tools/package.py --check     # 只在改动触及发布产物时:校验运行包
-python3 tools/package-plugin.py --check  # 只在改动触及 CHP 插件时:校验插件包
 node tools/performance-benchmark.mjs # 改动绘制热路径或存储时:性能基准
 ```
 
@@ -57,9 +56,9 @@ DEV 副本的 `#self-test` 入口覆盖绘图,撤销 / 重做,对象操作,蒙�
 - 使用可直接运行的原生 HTML / CSS / JavaScript,组件以 IIFE 注册到 `window.hamdraw`,**不引入**框架,构建器,包管理器,CDN 或远程字体。
 - 兼容 Android 10 与旧厂商 WebView,避免无降级的新语法与新 Web API。
 - 图片字节,Base64,data URL **禁止写入 `haminn.data`**：作品记录只存文件引用,用户导入的图片与服务返回的图片使用 Haminn 逻辑文件,内联图片通过公开文本文件接口保存为有界编码文件块,由 `services/assets.js` 统一恢复和清理。不要在 release 目录保存用户资产,也不要臆造宿主二进制写入接口。
-- 接口模式与参数：画幅,步数,参考图权重由所选接口的内置规格决定,`ref_strength` 是唯一的参考图权重入口。CHP 的画幅取自插件信息文档里该场景的 `frames`(锁 `1:1` 那一档),参考图权重取自它的 `defaults`,步数是本应用自己的数 —— 协议不定义 `ext_params` 里的任何字段。契约以 `comfyui-plugin/README.md` 为准。
-- 提示词原样提交,由服务端决定要不要译英：CHP 插件在提交时自己译(见信息文档的 `rules[].prompt.language`),OpenAI / Stability 那一侧本来就吃英文。客户端不再保留任何翻译机制。
-- 运行包只包含 `index.html`,`haminn.json`,`guid.md`,`app/` 与 `styles/`,`tools/`,`tests/`,`docs/`,`release/`,`comfyui-plugin/` 不进运行包。插件版本只有一个出处：`comfyui-plugin/hamdraw_chp/version.py`。
+- 接口模式与参数：画幅,步数,参考图权重由所选接口的内置规格决定,`ref_strength` 是唯一的参考图权重入口。CHP 的画幅取自信息文档里该场景的 `frames`(锁 `1:1` 那一档),参考图权重取自它的 `defaults`,步数是本应用自己的数 —— 协议不定义 `ext_params` 里的任何字段。契约以 `haminn-chp` 仓的 `plans/chp-spec.md` 为准。
+- 提示词原样提交,由服务端决定要不要译英：CHP 在提交时自己译(见信息文档的 `rules[].prompt.language`),OpenAI / Stability 那一侧本来就吃英文。客户端不再保留任何翻译机制。
+- 运行包只包含 `index.html`,`haminn.json`,`guid.md`,`app/` 与 `styles/`,`tools/`,`tests/`,`docs/`,`release/` 不进运行包。
 
 ## 不要提交
 

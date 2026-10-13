@@ -49,38 +49,9 @@
     if (JSON.stringify(draft) === original) return true;
     return ui.confirm({ title: t("放弃未保存的修改？", "Discard changes?"), message: t("模型设置尚未保存。", "Your model settings have not been saved."), ok: t("放弃修改", "Discard") });
   }
-  // A happ cannot read its own bundled files (the host serves documents with
-  // connect-src 'none'), so the plugin archive travels as bytes generated into
-  // app/assets/comfyui-plugin.js at packaging time. Writing them out through the
-  // host and handing the stored file to the export flow gives the user exactly the
-  // archive that release/hamdraw-comfyui-plugin-v*.zip holds.
-  async function downloadPlugin() {
-    var bundle = app.comfyuiPlugin, bridge = app.platform.haminn.current();
-    if (!bundle || !bundle.base64) throw new Error(t("这个版本没有内置插件包，请到官网下载", "This build ships no plugin package; download it from the site"));
-    if (!bridge) throw new Error(t("保存插件需要 Haminn 宿主环境", "Saving the plugin needs the Haminn host"));
-    var writeId = "", stored = null;
-    try {
-      var write = await bridge.files.beginWrite({ name: bundle.name, mime: "application/zip" });
-      writeId = write.writeId;
-      // One append carries at most maxChunkBytes of decoded data, and base64 spends
-      // four characters per three bytes, so the character cap is that byte cap
-      // rounded down to a whole three-byte group and re-expanded.
-      var cap = Number(write.maxChunkBytes) || 65536;
-      var chunk = Math.max(3072, Math.floor(cap / 3) * 4);
-      for (var offset = 0; offset < bundle.base64.length; offset += chunk) {
-        await bridge.files.appendBytes({ writeId: writeId, chunkBase64: bundle.base64.slice(offset, offset + chunk) });
-      }
-      stored = await bridge.files.finishWrite({ writeId: writeId }); writeId = "";
-      // export() opens the system save dialog: the user picks a folder and the host
-      // copies the stored bytes there. Nothing leaves the device or the network.
-      var exported = await bridge.files.export({ logicalFileId: stored.logicalFileId });
-      if (exported && exported.cancelled) return;
-      ui.toast(t("插件包已保存", "Plugin package saved"));
-    } finally {
-      if (writeId) await bridge.files.abortWrite({ writeId: writeId }).catch(function () {});
-      if (stored) await bridge.files.delete({ logicalFileId: stored.logicalFileId }).catch(function () {});
-    }
-  }
+  // The CHP plugin no longer travels with this app: it is installed on the machine
+  // that runs ComfyUI, so the only thing this app owes the user is a pointer to the
+  // page that explains and serves it. See the CHP hint in renderModels().
   function open(kind) {
     ui = app.components.ui;
     if (kind === "models") {
@@ -154,9 +125,7 @@
         (protocol === "openai-images" ? select("quality", t("生成质量", "Quality"), model.quality, [["low", t("快速", "Low")], ["medium", t("均衡", "Medium")], ["high", t("精细", "High")], ["auto", t("自动", "Auto")]]) : '') +
         textarea("customHeaders", t("自定义请求头 JSON", "Custom headers JSON"), chp ? shared.customHeaders : model.customHeaders, '{"X-API-Key":"…"}') + '</details>' +
         '<p class="field-help">' + t("只向你配置的服务发送画面。局域网支持 HTTP；访问密码仅在保存后保存在当前应用。", "Images go only to your configured service. LAN HTTP is supported. Passwords are stored locally when you save.") + '</p>' +
-        '<button class="button button-secondary" data-test><i class="fa-solid fa-plug"></i>' + t("测试连接", "Test connection") + '</button><p class="connection-status" data-test-status></p>' +
-        (chp ? '<button class="button button-secondary" data-plugin-download><i class="fa-solid fa-download"></i>' + t("下载 ComfyUI 插件", "Download ComfyUI plugin") + '</button>' +
-          '<p class="field-help">' + t("插件包随本应用一起提供。解压到 ComfyUI 的 custom_nodes 目录后重启 ComfyUI，再在 CHP 插件配置节点里填同样的密码。", "The plugin package ships with this app. Unzip it into ComfyUI's custom_nodes directory, restart ComfyUI, then set the same password in the CHP plugin's config node.") + '</p>' : '') + '</div>';
+        '<button class="button button-secondary" data-test><i class="fa-solid fa-plug"></i>' + t("测试连接", "Test connection") + '</button><p class="connection-status" data-test-status></p></div>';
     var root = ui.open({ title: t("模型配置", "Models"), beforeClose: discard, html:
       '<div class="segmented model-tabs">' + tabs + '</div>' + card + footer() });
     bindChoices(root);
@@ -228,8 +197,6 @@
         throw error;
       }
     });
-    var pluginButton = root.querySelector("[data-plugin-download]");
-    if (pluginButton) pluginButton.onclick = ui.action(downloadPlugin);
     root.querySelector("[data-cancel]").onclick = ui.requestClose;
     root.querySelector("[data-save]").onclick = ui.action(async function () {
       SLOTS.forEach(function (name) {
