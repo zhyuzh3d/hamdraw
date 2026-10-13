@@ -93,7 +93,7 @@ assert.equal(internals.aspect(768, 1536), "9:16");
 // read out of here rather than assumed.
 const document = {
   spec: "chp/2",
-  plugin: { id: "hamdraw_chp", version: "3.0.0", label: { zh: "CHP 插件（ComfyUI Haminn Protocol）", en: "CHP plugin (ComfyUI Haminn Protocol)" } },
+  plugin: { id: "hamdraw_chp", version: "3.0.0", label: { zh: "CHP 插件（CHPCP）", en: "CHP plugin (CHPCP)" } },
   auth: { required: true, authorized: true, scheme: "Bearer", header: "Authorization" },
   endpoints: {
     info: "/chp/info", jobs: "/chp/api/jobs", job: "/chp/api/jobs/{job_id}",
@@ -477,5 +477,75 @@ await assert.rejects(() => providers.generate({
   slot: "quick", protocol: "chp", endpoint: "http://192.168.1.2:8188", apiKey: "wrong",
   width: 512, height: 512, steps: 8, refStrength: 0.55, timeoutMs: 30000, customHeaders: ""
 }, { prompt: "a fox", negativePrompt: "", seed: 1, strength: 0.8, imageDataUrl: "data:image/png;base64,YWJj" }), /访问密码不正确/, "a wrong password must surface as a readable password error");
+
+// A 401 on the information endpoint is an answer, and a *certain* one: the address
+// is right, the thing answering is CHP, the key is wrong. Before this version that
+// status fell into the same bucket as a 404 from ComfyUI's own web root — read as
+// "something answered", tried against the second candidate, and finally reported as
+// "that address is not a CHP server", which sends the reader off to reinstall a
+// plugin that is already working. (The plugin used to answer this endpoint without
+// a key at all, which is why the case is new rather than merely mishandled.)
+let chpAttempts = 0;
+context.hamdraw.platform.haminn.request = async () => {
+  chpAttempts += 1;
+  return { status: 401, bodyText: JSON.stringify({ error: "unauthorized", spec: "chp/2" }) };
+};
+await assert.rejects(() => providers.test({
+  slot: "quick", protocol: "chp", endpoint: "http://192.168.1.2:8188", apiKey: "wrong",
+  width: 512, height: 512, timeoutMs: 30000, customHeaders: ""
+}), error => {
+  assert.ok(/访问密码不正确/.test(error.message), "一个 401 必须当场报「访问密码不正确」，而不是别的");
+  assert.equal(/不是 CHP 服务/.test(error.message), false, "401 不许说成「这个地址不是 CHP 服务」");
+  return true;
+});
+assert.equal(chpAttempts, 1, "401 要当场停：第二条候选不再试，等一会儿也不重试");
+
+// A key is granted its own categories, so one may be refused one of them. That is
+// an administrator's decision, not a broken install — and it is a different thing
+// from the host's own network permission, which is why it gets its own sentence
+// rather than borrowing that one.
+assert.equal(internals.chpError(new Error("请求失败（403）：forbidden_capability")).message,
+  "这把 key 没有这个能力，请让管理员在 CHP 控制台里为这个场景授权",
+  "403 必须说成「这把 key 没有这个能力」");
+context.hamdraw.platform.haminn.request = async () => ({ status: 403, bodyText: JSON.stringify({ error: "forbidden_capability", message: "这把 key 没有授权。", spec: "chp/2" }) });
+await assert.rejects(() => providers.generate({
+  slot: "quick", protocol: "chp", endpoint: "http://192.168.1.2:8188", apiKey: "limited",
+  width: 512, height: 512, steps: 8, refStrength: 0.55, timeoutMs: 30000, customHeaders: ""
+}, { prompt: "a fox", negativePrompt: "", seed: 1, strength: 0.8, imageDataUrl: "data:image/png;base64,YWJj" }),
+/这把 key 没有这个能力/, "把 key 授权不足当成一次普通的请求失败，用户就不知道要找谁");
+
+// The document is per service, not per app run. It is filtered by the key the
+// request carried, so one global copy would put key A's abilities on key B's card —
+// and the worst case of that is not cosmetic: a restricted key's screen would list
+// what a full-rights key may do.
+const serviceA = { endpoint: "http://192.168.1.2:8188", apiKey: "key-a" };
+const serviceB = { endpoint: "http://192.168.1.2:8188", apiKey: "key-b" };
+const docA = plain(document);
+const docB = plain(document);
+docB.rules = docB.rules.filter(rule => rule.category !== "fast");
+// Both publish the square both cards are locked to — `1024x1024` — and differ in the
+// *second* resolution. A difference on the canvas they both use could not be told
+// apart: the canvas is checked before the document is even fetched.
+docB.abilities[0].frames = docB.abilities[0].frames.map(frame =>
+  frame.category === "upscale" && frame.ratio === "1:1"
+    ? Object.assign({}, frame, { resolution: ["1024x1024", "4096x4096"] })
+    : frame);
+context.hamdraw.platform.haminn.request = async options => {
+  const key = String(options.headers.Authorization || "").replace(/^Bearer /, "");
+  return { status: 200, bodyText: JSON.stringify(key === "key-a" ? docA : docB) };
+};
+await providers.test({
+  slot: "upscale", protocol: "chp", endpoint: serviceA.endpoint, apiKey: serviceA.apiKey,
+  width: 1024, height: 1024, timeoutMs: 30000, customHeaders: ""
+});
+await providers.test({
+  slot: "upscale", protocol: "chp", endpoint: serviceB.endpoint, apiKey: serviceB.apiKey,
+  width: 1024, height: 1024, timeoutMs: 30000, customHeaders: ""
+});
+// B was read last, so a single global cache would now answer every question with B.
+assert.equal(internals.lockedCanvasError({ protocol: "chp", slot: "upscale", endpoint: serviceA.endpoint, apiKey: serviceA.apiKey, width: 2048, height: 2048 }), null,
+  "同一进程里换了一把 key，A 的帧表不许被 B 的覆盖");
+assert.match(internals.lockedCanvasError({ protocol: "chp", slot: "upscale", endpoint: serviceB.endpoint, apiKey: serviceB.apiKey, width: 2048, height: 2048 }).message,
+  /4096 × 4096/, "B 那张卡必须按 B 的帧表判，说出 B 真的发布的那个画幅");
 
 console.log("providers.test.mjs: ok");

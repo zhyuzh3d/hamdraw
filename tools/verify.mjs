@@ -184,7 +184,7 @@ assert.ok(settingsJs.includes("SLOT_TABS") && settingsJs.includes('["inpaint"') 
 assert.ok(!settingsJs.includes("app.config.quality"), "the retired quality slot must not be read by the settings dialog");
 assert.match(componentsCss, /\.advanced summary:focus[^{]*\{outline:none/, "the advanced-options summary must not draw a focus ring");
 assert.ok(!providersJs.includes("a1x") && !providersJs.includes("A1X"), "the A1X protocol implementation must be deleted from the provider layer, not just hidden from the menu");
-assert.ok(providersJs.includes('name: "CHP 插件（ComfyUI Haminn Protocol，推荐）"'), "the CHP format must be presented under the plugin's own name for the protocol");
+assert.ok(providersJs.includes('name: "CHP 插件（CHPCP，推荐）"'), "the CHP format must be presented under the plugin's own name for the protocol");
 assert.ok(storeJs.includes("value.upscale = app.utils.merge") && storeJs.includes("value.inpaint = app.utils.merge") && storeJs.includes('model.protocol === "a1x-image"') && storeJs.includes('model.protocol = "chp"') && storeJs.includes("value.schema = 10"), "the two-model migration must split into the three tasks and fold the retired A1X and workflow formats into CHP");
 // Schema 9 is the CVP -> CHP rename. It cannot be left to the comparison sites: a
 // stored `protocol: "cvp"` answers to no entry in the picker, so the dialog would open

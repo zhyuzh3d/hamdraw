@@ -5,7 +5,7 @@
   var network = app.platform.haminn;
   var t = app.i18n && app.i18n.text || function (zh) { return zh; };
   var PROTOCOLS = [
-    { id: "chp", name: "CHP 插件（ComfyUI Haminn Protocol，推荐）", description: "连接装有 CHP 插件（ComfyUI Haminn Protocol）的 ComfyUI。插件自带快速生图 / 局部重绘 / 高质量渲染三套工作流，不需要导出工作流 JSON；密码在插件的配置节点里设置。中文提示词由插件自动译成英文。" },
+    { id: "chp", name: "CHP 插件（CHPCP，推荐）", description: "连接装有 CHP 插件（CHPCP）的 ComfyUI。插件自带快速生图 / 局部重绘 / 高质量渲染三套工作流，不需要导出工作流 JSON；密码在插件的配置节点里设置。中文提示词由插件自动译成英文。" },
     { id: "openai-images", name: "OpenAI Images 兼容", description: "兼容 /v1/images/generations 与 /v1/images/edits，适合云端与兼容网关。" },
     { id: "sd-webui", name: "SD WebUI / Forge", description: "兼容 /sdapi/v1/img2img，适合局域网 Stable Diffusion WebUI 或 Forge。" },
     { id: "stability", name: "Stability AI", description: "兼容 Stable Image v2beta 的 Control Sketch 与 Generate 接口。" }
@@ -189,11 +189,42 @@
   //: A connection still holding one was never really chosen by the user, so it
   //: moves up to the current example instead of pinning the app to an old address.
   var CHP_PAST_EXAMPLES = [CHP_EXAMPLE, "http://192.168.1.2:8188"];
-  //: The last information document. It is what lets the client offer the
-  //: resolutions a category really accepts, read the addresses it publishes, name
-  //: the model it will run and say whether a Chinese prompt needs translating —
-  //: and it is refreshed every time the connection is tested.
+  //: Every information document this session has read, **one bucket per service**.
+  //:
+  //: The document is filtered by the key the request carried, and a key is granted
+  //: its own categories — so a single global copy puts one service's abilities on
+  //: another's card, and the worst case of that is not cosmetic: a restricted key's
+  //: screen would list what a full-rights key may do. Kept by address **and** key,
+  //: because two keys against the same address are two different documents.
+  var chpDocuments = {};
+  //: The last information document read — the bucket the readers below answer from.
+  //: They take no config (render code has none to hand), so the bucket is chosen
+  //: where a service is actually named: a finished discovery, or the validation of
+  //: one config. It is what lets the client offer the resolutions a category really
+  //: accepts, read the addresses it publishes, name the model it will run and say
+  //: whether a Chinese prompt needs translating.
   var chpInfo = null;
+  //: What identifies one service: the address as typed (trailing slashes are not a
+  //: different service) plus the key. A blank key and a wrong key are deliberately
+  //: different buckets — one is "not asked yet", the other is an answer.
+  function chpBucketOf(config) {
+    return String(config && config.endpoint || "").trim().replace(/\/+$/, "") + "\n" + String(config && config.apiKey || "");
+  }
+  //: Point the readers at one service's document, so `chpRule` / `chpFrames` /
+  //: `chpSquare` / `chpUrl` can only ever answer about *that* service. Called
+  //: wherever a config is in hand. A service this session has not read leaves the
+  //: readers where they were: there is nothing truer to put there, and that is the
+  //: state a card is edited in before its first test connection.
+  function chpAdopt(config) {
+    var found = chpDocuments[chpBucketOf(config)];
+    if (found) chpInfo = found;
+    return chpInfo;
+  }
+  function chpRemember(document, config) {
+    var bucket = chpBucketOf(config);
+    if (document && document.spec) chpDocuments[bucket] = document;
+    return chpAdopt(config);
+  }
 
   //: The origin a CHP request is addressed against, with the root stripped.
   //:
@@ -221,7 +252,6 @@
     var value = String(stored == null ? "" : stored).trim();
     return !value || CHP_PAST_EXAMPLES.indexOf(value) >= 0 ? CHP_EXAMPLE : value;
   }
-  function chpRemember(document) { if (document && document.spec) chpInfo = document; return chpInfo; }
   //: One `rules[]` entry — the category's own contract. `category` is the only
   //: spelling: chp/2 keeps no aliases, so a name that is not in the table is
   //: nothing rather than another word for something else.
@@ -345,6 +375,10 @@
   //: the service cannot produce would otherwise travel to the server — which answers
   //: about the model, not about the size, and that reads as a broken setup.
   function lockedCanvasError(config) {
+    // The frames read below belong to *this* service. Without this line a card
+    // would be judged against whichever service was tested last — the failure mode
+    // being a refusal quoting a canvas some other install publishes.
+    chpAdopt(config);
     var side = [Number(config.width) || 0, Number(config.height) || 0];
     if (!side[0] || !side[1]) return null;
     // sd-webui takes a rule rather than a list: a square whose edges divide by 64.
@@ -369,6 +403,11 @@
   function chpError(error) {
     var text = String(error && error.message || error || "");
     if (/unauthorized|401/.test(text)) return new Error(t("访问密码不正确，请在 ComfyUI 的 CHP 插件配置节点里核对密码", "Wrong access password. Check the password set in the ComfyUI CHP plugin's config node."));
+    //: One key, its own categories. A 403 from CHP therefore means "this key is not
+    //: granted this capability" — an administrator's decision, not a broken install.
+    //: It is a different thing from the host's own network permission (see the
+    //: `能力已被拒绝` line below), so it gets its own sentence instead of reusing it.
+    if (/forbidden_capability|403/.test(text)) return new Error(t("这把 key 没有这个能力，请让管理员在 CHP 控制台里为这个场景授权", "This key is not allowed this capability. Ask the administrator to grant this category in the CHP console."));
     if (/no_model/.test(text)) return new Error(t("插件没有可用模型，请先在 ComfyUI 的 CHP 插件配置节点里为这个场景选好模型", "The plugin has no model. Choose the one this category runs on in the ComfyUI CHP plugin's config node."));
     if (/unsupported_category/.test(text)) return new Error(t("插件不认识这个场景，请升级 CHP 插件", "The plugin does not know this category. Please update the CHP plugin."));
     if (/unsupported_size/.test(text)) return new Error(t("插件不接受这个画幅；请点一次测试连接，读取插件当前的画幅表", "The plugin does not accept this resolution. Test the connection once to read the plugin's current frames."));
@@ -514,6 +553,10 @@
   function validate(config) {
     if (!config) throw new Error("模型配置不存在");
     u.validateEndpoint(config.endpoint);
+    // Everything read below — the frames a category publishes, the addresses the
+    // document publishes, the square it locks — must answer about *this* service.
+    // Without this line a card would be judged against whatever was tested last.
+    chpAdopt(config);
     if (config.protocol === "stability" && !config.apiKey && !u.isPrivateHost(new URL(config.endpoint).hostname)) throw new Error(app.i18n ? app.i18n.text("请先填写 API Key", "Enter an API key first") : "请先填写 API Key");
     if (config.protocol === "openai-images" && !config.model) throw new Error("请填写图像模型 ID");
     // Nothing else is judged here for CHP. There used to be a copy of the plugin's
@@ -546,6 +589,15 @@
         ensureOk(response, requestHeaders);
       } catch (error) {
         if (!firstError) firstError = error;
+        // A 401 is an answer **and a certain one**: the address is right, the thing
+        // answering is CHP, the key is wrong. Falling through to the second candidate
+        // would end in "that address is not a CHP server", which sends the reader off
+        // to reinstall a plugin that is already working — the one direction this
+        // error must never point. (Before this version CHP answered the information
+        // endpoint without a key at all, so there was no such status to read.)
+        if (Number(error && error.status) === 401) {
+          throw new Error(t("访问密码不正确，请在 ComfyUI 的 CHP 插件配置节点里核对密码", "Wrong access password. Check the password set in the ComfyUI CHP plugin's config node."));
+        }
         // ComfyUI's own web root answers 200 with a page, and a wrong path answers
         // 404: both are answers. A request that never got one has no status, and
         // that is the case whose error is worth keeping.
@@ -577,7 +629,11 @@
       // first two are answered together instead of being told apart by a second
       // failing request.
       var found = await chpInfoRequest(config, requestHeaders, timeoutMs);
-      var document = chpRemember(found.document);
+      // Filed under *this* config's bucket — the address and key the document was
+      // read with. Remembering it without them would put every service in one
+      // unnamed bucket, and a card judged after another was tested would be refused
+      // a canvas the other install publishes.
+      var document = chpRemember(found.document, config);
       var auth = document.auth || {};
       if (auth.required && !auth.authorized) throw new Error(t("访问密码不正确，请在 ComfyUI 的 CHP 插件配置节点里核对密码", "Wrong access password. Check the password set in the ComfyUI CHP plugin's config node."));
       var wanted = chpCategory(config), rule = chpRule(wanted);
@@ -624,6 +680,10 @@
     value.customHeaders = "";
     value.workflow = "";
     if (protocol === "chp") {
+      // A card being created has no document of its own yet, and must not inherit
+      // the last service that happened to be tested: adopt the bucket this card
+      // will live in (its starting address, no key yet).
+      chpAdopt({ endpoint: CHP_EXAMPLE, apiKey: "" });
       // What the plugin accepts is the plugin's to say, so once its document has
       // been read it decides the starting canvas and reference weight. With nothing
       // read yet both fall back to the app's own numbers, which is where an

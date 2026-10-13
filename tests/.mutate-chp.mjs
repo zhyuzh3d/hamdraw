@@ -85,6 +85,28 @@ const mutations = [
     "if (!ability.ready) throw new Error(t(",
     "if (false) throw new Error(t(",
     "Missing expected rejection"],
+  // CHP's information endpoint needs a key since this version, so a wrong one
+  // answers 401 — an answer, not a non-answer. Swallowing it puts the reader back on
+  // "that address is not a CHP server", which is the one direction this error must
+  // never point: it sends them to reinstall a working plugin.
+  ["a 401 is swallowed and reported as a wrong address",
+    '        if (Number(error && error.status) === 401) {\n          throw new Error(t("访问密码不正确，请在 ComfyUI 的 CHP 插件配置节点里核对密码", "Wrong access password. Check the password set in the ComfyUI CHP plugin\'s config node."));\n        }\n',
+    "",
+    "一个 401 必须当场报「访问密码不正确」"],
+  // Back to one document for the whole app run, which is how one key's abilities
+  // end up on another key's card.
+  ["every service shares one document cache",
+    '    return String(config && config.endpoint || "").trim().replace(/\\/+$/, "") + "\\n" + String(config && config.apiKey || "");',
+    '    return "";',
+    "同一进程里换了一把 key，A 的帧表不许被 B 的覆盖"],
+  // The buckets only work if the document is *filed* under one. Dropping the config
+  // here sent every read into the unnamed bucket, so the per-service cache existed
+  // but nothing ever landed in it — the card was still judged by whichever install
+  // was tested last. (This one is a real defect the assertion above found.)
+  ["the document is filed without saying which service it belongs to",
+    "var document = chpRemember(found.document, config);",
+    "var document = chpRemember(found.document);",
+    "同一进程里换了一把 key，A 的帧表不许被 B 的覆盖"],
 ];
 
 const escaped = [];
