@@ -225,6 +225,13 @@ assert.ok(settingsJs.includes("var shared = draft.connection") && settingsJs.inc
 assert.ok(!html.includes("comfyui-plugin.js"), "the happ must not embed the CHP plugin archive; it is downloaded from the website");
 assert.ok(!settingsJs.includes("data-plugin-download") && !settingsJs.includes("downloadPlugin") && !settingsJs.includes("app.comfyuiPlugin"), "the CHP form must not offer an in-app plugin download any more");
 assert.ok(!fs.existsSync(path.join(root, "app/assets/comfyui-plugin.js")) && !fs.existsSync(path.join(root, "tools/embed-plugin.py")), "nothing may regenerate the embedded plugin archive");
+// What replaces it: one sentence on the CHP form pointing at the official page.
+// The URL must carry no version (it is compiled into three happs, so a versioned
+// one would go stale by itself), and the anchor is pinned in its exact opening
+// form so a `target="_blank"` cannot be slipped onto it — the host has no window
+// handler, so a new-tab link would silently do nothing.
+assert.ok(settingsJs.includes('<a href="https://haminn.airen.life/chp.html">'), "the CHP form must link to the page that explains and serves the plugin, as a plain same-frame anchor");
+assert.ok(settingsJs.includes("CHP 是 Haminn 综合入口程序") && settingsJs.includes("CHP is the Haminn Consolidated Portal"), "the CHP hint must be written in both languages, like every other line in this dialog");
 assert.ok(settingsJs.includes("function helpLine") && settingsJs.includes("function helpSection") && settingsJs.includes('class="help-icon"') && componentsCss.includes(".help-icon{box-sizing:border-box;flex:0 0 auto"), "every help line must lead with the tool's own icon");
 // The sheet is a map of the toolbars, so the icons it prints must be the icons the
 // toolbars paint. Asserting a few of them keeps a rewrite from quietly dropping them.

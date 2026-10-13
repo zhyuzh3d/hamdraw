@@ -125,7 +125,11 @@
         (protocol === "openai-images" ? select("quality", t("生成质量", "Quality"), model.quality, [["low", t("快速", "Low")], ["medium", t("均衡", "Medium")], ["high", t("精细", "High")], ["auto", t("自动", "Auto")]]) : '') +
         textarea("customHeaders", t("自定义请求头 JSON", "Custom headers JSON"), chp ? shared.customHeaders : model.customHeaders, '{"X-API-Key":"…"}') + '</details>' +
         '<p class="field-help">' + t("只向你配置的服务发送画面。局域网支持 HTTP；访问密码仅在保存后保存在当前应用。", "Images go only to your configured service. LAN HTTP is supported. Passwords are stored locally when you save.") + '</p>' +
-        '<button class="button button-secondary" data-test><i class="fa-solid fa-plug"></i>' + t("测试连接", "Test connection") + '</button><p class="connection-status" data-test-status></p></div>';
+        '<button class="button button-secondary" data-test><i class="fa-solid fa-plug"></i>' + t("测试连接", "Test connection") + '</button><p class="connection-status" data-test-status></p>' +
+        // The plugin lives on the machine that runs ComfyUI, so this app owes the user
+        // a pointer rather than a file. Same-frame link, same reason as PROJECT_URL
+        // below: a new-tab one would silently do nothing.
+        (chp ? '<p class="field-help">' + t('CHP 是 Haminn 综合入口程序：装在运行 ComfyUI 那台电脑上，把本机模型统一成一个接口。请到 Haminn 官网下载：<a href="https://haminn.airen.life/chp.html">haminn.airen.life/chp.html</a>。', 'CHP is the Haminn Consolidated Portal: it sits on the computer that runs ComfyUI and puts its local models behind one interface. Get it from the Haminn website: <a href="https://haminn.airen.life/chp.html">haminn.airen.life/chp.html</a>.') + '</p>' : '') + '</div>';
     var root = ui.open({ title: t("模型配置", "Models"), beforeClose: discard, html:
       '<div class="segmented model-tabs">' + tabs + '</div>' + card + footer() });
     bindChoices(root);
